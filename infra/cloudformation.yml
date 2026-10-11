@@ -75,6 +75,15 @@ Parameters:
     Default: pizzawithcola/arcade_ftw_be
     Description: owner/repo allowed to assume the deploy role through OIDC.
 
+  # GitHub's OIDC subject now carries immutable numeric IDs, e.g.
+  # repo:pizzawithcola@68038650/arcade_ftw_be@1414195943:ref:refs/heads/main.
+  # Both spellings are allowed below so the stack works whether or not the
+  # repository sends the ID-qualified subject.
+  GitHubRepoIds:
+    Type: String
+    Default: pizzawithcola@68038650/arcade_ftw_be@1414195943
+    Description: owner@ownerId/repo@repoId as it appears in the OIDC subject.
+
   GitHubBranch:
     Type: String
     Default: main
@@ -310,8 +319,11 @@ Resources:
                 token.actions.githubusercontent.com:aud: sts.amazonaws.com
               StringLike:
                 # Locks the role to this repo and branch: a fork, another repo,
-                # or a pull request cannot assume it.
-                token.actions.githubusercontent.com:sub: !Sub repo:${GitHubRepo}:ref:refs/heads/${GitHubBranch}
+                # or a pull request cannot assume it. Values in a list are OR'd,
+                # and both contain no wildcards, so the match stays exact.
+                token.actions.githubusercontent.com:sub:
+                  - !Sub repo:${GitHubRepo}:ref:refs/heads/${GitHubBranch}
+                  - !Sub repo:${GitHubRepoIds}:ref:refs/heads/${GitHubBranch}
       Policies:
         - PolicyName: deploy
           PolicyDocument:
