@@ -50,12 +50,28 @@ aws cloudformation deploy \
   --template-file infra/cloudformation.yml \
   --stack-name arcade-ftw \
   --capabilities CAPABILITY_NAMED_IAM \
+  --region ap-south-1 \
   --parameter-overrides \
     VpcId=vpc-xxx \
     PublicSubnet1=subnet-xxx PublicSubnet2=subnet-xxx \
     TaskSubnet1=subnet-xxx TaskSubnet2=subnet-xxx \
-    ApiKey=xxx
+    ApiKey=xxx \
+    DesiredCount=0
 ```
+
+> ⚠️ **首次建栈必须 `DesiredCount=0`**：ECR 为空时，非 0 的服务永远达不到稳定态，CloudFormation 会挂住并回滚。等服务里有镜像后再经 CI 或 `update-service --desired-count 1` 拉起。
+
+参数取值（`ap-south-1`，与旧系统共享 VPC）：
+
+| 参数 | 值 |
+|---|---|
+| `VpcId` | `vpc-0dda76b286c45fc27` |
+| `PublicSubnet1` | `subnet-01b3aa683790a0e8c`（1a）|
+| `PublicSubnet2` | `subnet-045ccd04e547efddb`（1b）|
+| `TaskSubnet1` / `TaskSubnet2` | 同上两者 |
+| `DesiredCount` | 首次 `0`，上线后 `1` |
+
+> ⛔ **不要用 `subnet-0034e389a5d549ae3`（ap-south-1c）**：ALB 未覆盖该 AZ，会导致「约 1/3 概率部署失败」（旧系统踩过）。
 
 ### CI
 

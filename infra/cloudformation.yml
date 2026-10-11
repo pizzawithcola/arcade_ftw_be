@@ -59,6 +59,17 @@ Parameters:
     Description: ACM certificate ARN for HTTPS. Leave empty to skip the 443 listener.
     Default: ''
 
+  DesiredCount:
+    Type: Number
+    MinValue: 0
+    MaxValue: 1
+    Default: 1
+    Description: >
+      Running tasks. Use 0 to create the stack before the first image exists:
+      a service with a non-zero count never reaches a steady state while the
+      ECR repository is empty, and CloudFormation would hang and roll back.
+      Never raise this above 1 - the engine keeps room state in process memory.
+
 Conditions:
   HasCertificate: !Not [!Equals [!Ref CertificateArn, '']]
 
@@ -225,6 +236,9 @@ Resources:
   # ─── ECS Service ──────────────────────────────────────────────────────────────
   EcsService:
     Type: AWS::ECS::Service
+    # ECS rejects a service whose target group is not yet attached to a load
+    # balancer, and the plain Ref on AlbTargetGroup does not imply the listener.
+    DependsOn: AlbHttpListener
     Properties:
       ServiceName: !Sub ${NamePrefix}-service
       Cluster: !Ref EcsCluster
@@ -232,7 +246,7 @@ Resources:
       LaunchType: FARGATE
       # Exactly one task, and never scale out: the game engine keeps room state in
       # process memory, so a second task would serve a different, empty state.
-      DesiredCount: 1
+      DesiredCount: !Ref DesiredCount
       NetworkConfiguration:
         AwsvpcConfiguration:
           Subnets:
