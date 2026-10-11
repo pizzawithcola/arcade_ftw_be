@@ -89,6 +89,32 @@ Parameters:
     Default: main
     Description: Only workflow runs on this branch may assume the deploy role.
 
+  DbSubnetGroupName:
+    Type: String
+    Default: default-vpc-0dda76b286c45fc27
+    Description: >
+      SHARED RESOURCE - the VPC's existing default DB subnet group. Referenced
+      only, never modified. It already spans the subnets the legacy database
+      uses, so no new subnets are needed and the shared VPC stays untouched.
+
+  DbInstanceClass:
+    Type: String
+    Default: db.t4g.micro
+    Description: RDS instance class.
+
+  DbEngineVersion:
+    Type: String
+    Default: '16.15'
+    Description: >
+      Exact PostgreSQL minor version. A major-only value such as '16' is
+      rejected for new instances, and AWS retires old minors, so this is a
+      parameter you can bump without editing the resource.
+
+  DbName:
+    Type: String
+    Default: arcade_ftw
+    Description: Initial database name.
+
 Conditions:
   HasCertificate: !Not [!Equals [!Ref CertificateArn, '']]
 
@@ -220,6 +246,14 @@ Resources:
             Action: sts:AssumeRole
       ManagedPolicyArns:
         - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+      Policies:
+        - PolicyName: read-database-secret
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: secretsmanager:GetSecretValue
+                Resource: !GetAtt DbInstance.MasterUserSecret.SecretArn
 
   # ─── Task Definition ──────────────────────────────────────────────────────────
   EcsTaskDefinition:
@@ -245,6 +279,20 @@ Resources:
               Value: INFO
             - Name: API_KEY
               Value: !Ref ApiKey
+            - Name: DB_HOST
+              Value: !GetAtt DbInstance.Endpoint.Address
+            - Name: DB_PORT
+              Value: !Sub ${DbInstance.Endpoint.Port}
+            - Name: DB_NAME
+              Value: !Ref DbName
+            - Name: DB_USER
+              Value: !GetAtt DbInstance.MasterUsername
+          # Only the password is a secret; host/port/name/user stay plain env so
+          # the application assembles the DSN. CloudFormation cannot splice a
+          # secret value into a composed connection string.
+          Secrets:
+            - Name: DB_PASSWORD
+              ValueFrom: !Sub '${DbInstance.MasterUserSecret.SecretArn}:password::'
           LogConfiguration:
             LogDriver: awslogs
             Options:
@@ -287,6 +335,57 @@ Resources:
         DeploymentCircuitBreaker:
           Enable: true
           Rollback: true
+
+  # ─── RDS ──────────────────────────────────────────────────────────────────────
+  DbSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: !Sub ${NamePrefix}-rds-sg
+      GroupDescription: RDS - inbound 5432 only from the ECS tasks
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 5432
+          ToPort: 5432
+          SourceSecurityGroupId: !Ref EcsSecurityGroup
+
+  DbInstance:
+    Type: AWS::RDS::DBInstance
+    DeletionPolicy: Snapshot
+    UpdateReplacePolicy: Snapshot
+    Properties:
+      DBInstanceIdentifier: !Sub ${NamePrefix}-db
+      Engine: postgres
+      EngineVersion: !Ref DbEngineVersion
+      DBInstanceClass: !Ref DbInstanceClass
+      AllocatedStorage: '20'
+      StorageType: gp3
+      StorageEncrypted: true
+      # The shared default DB subnet group already covers several AZs.
+      DBSubnetGroupName: !Ref DbSubnetGroupName
+      VPCSecurityGroups:
+        - !Ref DbSecurityGroup
+      DBName: !Ref DbName
+      MasterUsername: arcade_ftw
+      # RDS generates the password and keeps it in Secrets Manager, so no
+      # credential is ever written into this template or into the repo.
+      ManageMasterUserPassword: true
+      # Public subnets are all this VPC has, so reachability is controlled by
+      # the flag plus the security group above instead.
+      PubliclyAccessible: false
+      MultiAZ: false
+      BackupRetentionPeriod: 7
+      # Off on purpose: an unattended minor upgrade during an event is worse
+      # than a slightly older patch level. The legacy database does the same.
+      AutoMinorVersionUpgrade: false
+      DeletionProtection: true
+      # Deliberately not the legacy database's wed:03:00 maintenance window.
+      # The backup window takes a bare time range; the day prefix is only valid
+      # for the maintenance window.
+      PreferredMaintenanceWindow: sun:04:00-sun:04:30
+      PreferredBackupWindow: 02:00-02:30
+      MonitoringInterval: 0
+      EnablePerformanceInsights: false
 
   # ─── GitHub Actions OIDC ──────────────────────────────────────────────────────
   # No long-lived AWS keys anywhere: CI exchanges a short-lived GitHub token for
@@ -352,6 +451,9 @@ Resources:
                   - ecs:DescribeTaskDefinition
                   - ecs:RegisterTaskDefinition
                   - ecs:UpdateService
+                  # Needed to run the one-off migration task before the rollout.
+                  - ecs:RunTask
+                  - ecs:DescribeTasks
                 Resource: '*'
               - Sid: PassTaskRoles
                 Effect: Allow
@@ -398,3 +500,7 @@ Outputs:
   GitHubDeployRoleArn:
     Description: Role ARN for the workflow's role-to-assume (OIDC, no secrets).
     Value: !GetAtt GitHubDeployRole.Arn
+
+  DbEndpoint:
+    Description: RDS endpoint host.
+    Value: !GetAtt DbInstance.Endpoint.Address
