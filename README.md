@@ -14,14 +14,14 @@ infra/
 alembic.ini            # 迁移配置；DSN 由 DB_* 环境变量提供，不进版本库的凭据
 docker-compose.yml     # 本地 Postgres（宿主 5433）
 app/
-├── main.py            # FastAPI 入口（CORS + /health + /health/db + WS 路由）
+├── main.py            # FastAPI 入口（CORS + /health + /health/db + /api 路由）
 ├── config.py          # pydantic-settings 环境变量；database_url 由 DB_* 拼装
 ├── database.py        # async engine + session factory
 ├── models.py          # players / scores（长表，不是 game1~5）
 ├── migrations/        # Alembic（env.py 从环境变量取 DSN）
 ├── engine.py          # 状态机：idle / playing / paused / finished + current_index
 ├── flow.py            # 主线流程配置（改流程不改代码）
-├── ws.py              # WebSocket 端点（占位）
+├── ws.py              # WebSocket 端点（占位，挂在 /api/ws）
 └── question_types/    # 题型注册表（插件化）
     ├── base.py        # 题型协议
     ├── choice.py      # 选择题（示例实现）
@@ -48,6 +48,12 @@ pytest                        # 集成测试：迁移 + 读写往返
 > 本地 Postgres 固定 **5433**：开发机的 5432 常已被自己的 Postgres 占用。
 
 验证：`curl http://localhost:5071/health` 与 `curl http://localhost:5071/health/db`
+
+## 路由约定
+
+- **游戏相关的一切都挂在 `/api/*`**。CloudFront 只用一条 `/api/*` 行为把流量反代到 ALB，所以**新增接口永远不需要改基础设施**。
+- `/health`、`/health/db` 是唯一留在根路径的例外：ALB 直接探活 `/health`（不经过 CloudFront）。
+- **ALB 只接受来自 CloudFront 的流量**（安全组用的是 CloudFront 的源站前缀列表 `pl-9aa247f3`）。所以**直连 ALB 会超时**，验证一律走 `https://<cloudfront 域名>`。
 
 ## 数据库
 
@@ -108,7 +114,8 @@ push main
   → 构建镜像 → 推 ECR
   → 拉线上 task definition、改镜像、注册新 revision
   → 以新镜像跑一次性 Fargate 任务：alembic upgrade head   ← 失败则中止，不动线上
-  → update-service 滚动更新 → 验证 /health 与 /health/db
+  → update-service 滚动更新
+  → 经 CloudFront 验证 /health 与 /health/db（ALB 直连已被安全组拒绝）
 ```
 
 迁移刻意放在**滚动更新之前**：迁移失败时旧 revision 继续服务，不会出现「代码已上新、schema 未生效」。迁移任务复用线上服务的子网与安全组。

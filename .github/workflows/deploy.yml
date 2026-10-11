@@ -20,8 +20,10 @@ env:
   ECS_SERVICE: arcade-ftw-service
   TASK_FAMILY: arcade-ftw-task
   CONTAINER_NAME: arcade-ftw-backend
-  ALB_NAME: arcade-ftw-alb
   LOG_GROUP: /ecs/arcade-ftw-backend
+  # The ALB only accepts traffic from CloudFront, so health is verified through
+  # the public hostname instead. Update alongside the arcade-ftw-frontend stack.
+  SITE_DOMAIN: d39s9y5ma27s5.cloudfront.net
 
 # No long-lived AWS keys: the job exchanges a short-lived GitHub OIDC token for
 # temporary credentials. id-token: write is what makes that exchange possible.
@@ -160,12 +162,11 @@ jobs:
       - name: Verify health endpoint
         if: steps.verify.outputs.service-exists == 'true'
         run: |
-          ALB_DNS=$(aws elbv2 describe-load-balancers \
-            --names "$ALB_NAME" \
-            --query "LoadBalancers[0].DNSName" --output text)
-          echo "ALB DNS: $ALB_DNS"
+          # Goes through CloudFront because the load balancer now only accepts
+          # traffic from CloudFront's origin-facing addresses.
+          echo "Site: https://$SITE_DOMAIN"
           for attempt in 1 2 3 4 5; do
-            if curl -fsS --max-time 10 "http://$ALB_DNS/health"; then
+            if curl -fsS --max-time 15 "https://$SITE_DOMAIN/health"; then
               echo
               echo "Health check passed."
               exit 0
@@ -180,11 +181,8 @@ jobs:
       - name: Verify database health endpoint
         if: steps.verify.outputs.service-exists == 'true'
         run: |
-          ALB_DNS=$(aws elbv2 describe-load-balancers \
-            --names "$ALB_NAME" \
-            --query "LoadBalancers[0].DNSName" --output text)
           for attempt in 1 2 3 4 5; do
-            if curl -fsS --max-time 10 "http://$ALB_DNS/health/db"; then
+            if curl -fsS --max-time 15 "https://$SITE_DOMAIN/health/db"; then
               echo
               echo "Database reachable."
               exit 0

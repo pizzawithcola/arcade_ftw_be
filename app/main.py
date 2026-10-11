@@ -1,6 +1,6 @@
 import logging
 
-from fastapi import FastAPI, HTTPException
+from fastapi import APIRouter, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
 
@@ -21,7 +21,12 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-app.include_router(ws_router)
+# Everything the game itself serves lives under /api, so CloudFront needs a
+# single behavior to proxy it and a new endpoint never needs an infra change.
+# /health stays at the root because the load balancer probes it directly.
+api = APIRouter(prefix="/api")
+api.include_router(ws_router)
+app.include_router(api)
 
 
 @app.get("/health")

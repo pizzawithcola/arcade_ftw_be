@@ -115,6 +115,14 @@ Parameters:
     Default: arcade_ftw
     Description: Initial database name.
 
+  CloudFrontPrefixListId:
+    Type: String
+    Default: pl-9aa247f3
+    Description: >
+      The AWS-managed prefix list com.amazonaws.global.cloudfront.origin-facing
+      for this region. Restricting the ALB to it means only CloudFront reaches
+      the load balancer; change it if the load balancer ever moves region.
+
 Conditions:
   HasCertificate: !Not [!Equals [!Ref CertificateArn, '']]
 
@@ -131,6 +139,13 @@ Resources:
           {"rules":[{"rulePriority":1,"description":"Keep the last 10 images","selection":{"tagStatus":"any","countType":"imageCountMoreThan","countNumber":10},"action":{"type":"expire"}}]}
 
   # ─── Security Groups ──────────────────────────────────────────────────────────
+  # CloudFront's origin-facing prefix list instead of 0.0.0.0/0, so the ALB is
+  # not reachable directly from the internet.
+  #
+  # GroupDescription still says "from the internet" even though it is no longer
+  # true: AWS rejects updates to a security group description and forces a
+  # replacement, and the replacement cannot reuse the existing GroupName. Fixing
+  # that wording would mean renaming the group and documenting the new name.
   AlbSecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
@@ -138,14 +153,15 @@ Resources:
       GroupDescription: ALB - inbound HTTP/HTTPS from the internet
       VpcId: !Ref VpcId
       SecurityGroupIngress:
+        # Only port 80: the ALB has no HTTPS listener yet. It also has to be a
+        # single rule - CloudFront's origin-facing prefix list holds 46 entries
+        # and a security group allows 60 rules, so referencing it twice (80 and
+        # 443) exceeds the quota. Adding HTTPS later means dropping this rule or
+        # raising the quota.
         - IpProtocol: tcp
           FromPort: 80
           ToPort: 80
-          CidrIp: 0.0.0.0/0
-        - IpProtocol: tcp
-          FromPort: 443
-          ToPort: 443
-          CidrIp: 0.0.0.0/0
+          SourcePrefixListId: !Ref CloudFrontPrefixListId
 
   EcsSecurityGroup:
     Type: AWS::EC2::SecurityGroup
@@ -480,6 +496,9 @@ Outputs:
   AlbDnsName:
     Description: ALB DNS name - the API base URL.
     Value: !GetAtt Alb.DNSName
+    # Consumed by the frontend stack as the CloudFront API origin.
+    Export:
+      Name: !Sub ${AWS::StackName}-AlbDns
 
   EcrRepositoryUri:
     Description: ECR repository URI - CI pushes here.
