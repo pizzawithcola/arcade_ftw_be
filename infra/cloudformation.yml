@@ -1,0 +1,284 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  Arcade FTW - Backend infrastructure (scope: backend only).
+  Creates: ECR repository, ALB + Target Group, ECS Fargate cluster/service/task,
+  security groups, IAM roles, CloudWatch log group.
+  NOT included on purpose: VPC/subnets (shared with the legacy stack - passed in as
+  parameters), RDS (placeholder phase), S3 + CloudFront (frontend repo's concern).
+
+Metadata:
+  Notes: |
+    Adapted from cyber_ai_festival_be/infra/cloudformation.yml. Fixes carried over:
+      - Parameter types use the real CFN types (the legacy template declared
+        `AWS::EC2::Parameter`, which is not a valid parameter type).
+      - The execution role gets a stack-scoped name instead of the global
+        `ecsTaskExecutionRole` (which collides across stacks in one account).
+      - The ECR repository is created here, so the stack is self-contained.
+      - ALB idle timeout is raised because the service hosts a WebSocket.
+
+Parameters:
+  NamePrefix:
+    Type: String
+    Default: arcade-ftw
+    Description: >
+      Prefix for every resource name and for the ECR repository.
+      Deliberately hyphenated: ALB and Target Group names reject underscores.
+
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+    Description: SHARED RESOURCE - the legacy VPC. Referenced only, never modified.
+
+  PublicSubnet1:
+    Type: AWS::EC2::Subnet::Id
+    Description: Public subnet 1 for the ALB.
+
+  PublicSubnet2:
+    Type: AWS::EC2::Subnet::Id
+    Description: Public subnet 2 for the ALB.
+
+  # Both task subnets MUST sit in Availability Zones the ALB above is enabled in,
+  # otherwise the target group rejects the task with
+  # "Target is in an Availability Zone that is not enabled for the load balancer",
+  # the health check fails and the deployment rolls back. They must also provide
+  # egress, which is why AssignPublicIp stays ENABLED below.
+  TaskSubnet1:
+    Type: AWS::EC2::Subnet::Id
+    Description: Subnet 1 for the ECS tasks - ALB-enabled AZ and egress required.
+
+  TaskSubnet2:
+    Type: AWS::EC2::Subnet::Id
+    Description: Subnet 2 for the ECS tasks - ALB-enabled AZ and egress required.
+
+  ApiKey:
+    Type: String
+    Description: Value for the X-API-Key header. Placeholder phase only - move to Secrets Manager before the event.
+    NoEcho: true
+
+  CertificateArn:
+    Type: String
+    Description: ACM certificate ARN for HTTPS. Leave empty to skip the 443 listener.
+    Default: ''
+
+Conditions:
+  HasCertificate: !Not [!Equals [!Ref CertificateArn, '']]
+
+Resources:
+  # ─── ECR ──────────────────────────────────────────────────────────────────────
+  EcrRepository:
+    Type: AWS::ECR::Repository
+    Properties:
+      RepositoryName: !Sub ${NamePrefix}-backend
+      ImageScanningConfiguration:
+        ScanOnPush: true
+      LifecyclePolicy:
+        LifecyclePolicyText: |
+          {"rules":[{"rulePriority":1,"description":"Keep the last 10 images","selection":{"tagStatus":"any","countType":"imageCountMoreThan","countNumber":10},"action":{"type":"expire"}}]}
+
+  # ─── Security Groups ──────────────────────────────────────────────────────────
+  AlbSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: !Sub ${NamePrefix}-alb-sg
+      GroupDescription: ALB - inbound HTTP/HTTPS from the internet
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 0.0.0.0/0
+
+  EcsSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: !Sub ${NamePrefix}-ecs-sg
+      GroupDescription: ECS tasks - inbound only from the ALB
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 8000
+          ToPort: 8000
+          SourceSecurityGroupId: !Ref AlbSecurityGroup
+
+  # ─── Application Load Balancer ────────────────────────────────────────────────
+  Alb:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Name: !Sub ${NamePrefix}-alb
+      Scheme: internet-facing
+      Type: application
+      IpAddressType: ipv4
+      Subnets:
+        - !Ref PublicSubnet1
+        - !Ref PublicSubnet2
+      SecurityGroups:
+        - !Ref AlbSecurityGroup
+      # WebSocket connections are long-lived; the 60s default would drop them.
+      LoadBalancerAttributes:
+        - Key: idle_timeout.timeout_seconds
+          Value: '3600'
+
+  AlbHttpListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref Alb
+      Port: 80
+      Protocol: HTTP
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref AlbTargetGroup
+
+  AlbHttpsListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Condition: HasCertificate
+    Properties:
+      LoadBalancerArn: !Ref Alb
+      Port: 443
+      Protocol: HTTPS
+      Certificates:
+        - CertificateArn: !Ref CertificateArn
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref AlbTargetGroup
+
+  AlbTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: !Sub ${NamePrefix}-tg
+      Port: 8000
+      Protocol: HTTP
+      TargetType: ip
+      VpcId: !Ref VpcId
+      HealthCheckPath: /health
+      HealthCheckIntervalSeconds: 10
+      HealthCheckTimeoutSeconds: 8
+      HealthyThresholdCount: 2
+      UnhealthyThresholdCount: 2
+
+  # ─── ECS Cluster ──────────────────────────────────────────────────────────────
+  EcsCluster:
+    Type: AWS::ECS::Cluster
+    Properties:
+      ClusterName: !Sub ${NamePrefix}-cluster
+
+  # ─── IAM ──────────────────────────────────────────────────────────────────────
+  EcsTaskRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub ${NamePrefix}-ecs-task-role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+
+  EcsTaskExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub ${NamePrefix}-ecs-task-execution-role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+
+  # ─── Task Definition ──────────────────────────────────────────────────────────
+  EcsTaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: !Sub ${NamePrefix}-task
+      NetworkMode: awsvpc
+      RequiresCompatibilities:
+        - FARGATE
+      Cpu: '512'
+      Memory: '1024'
+      TaskRoleArn: !GetAtt EcsTaskRole.Arn
+      ExecutionRoleArn: !GetAtt EcsTaskExecutionRole.Arn
+      ContainerDefinitions:
+        - Name: !Sub ${NamePrefix}-backend
+          Image: !Sub ${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/${NamePrefix}-backend:latest
+          Essential: true
+          PortMappings:
+            - ContainerPort: 8000
+              Protocol: tcp
+          Environment:
+            - Name: LOG_LEVEL
+              Value: INFO
+            - Name: API_KEY
+              Value: !Ref ApiKey
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref LogGroup
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: ecs
+
+  # ─── ECS Service ──────────────────────────────────────────────────────────────
+  EcsService:
+    Type: AWS::ECS::Service
+    Properties:
+      ServiceName: !Sub ${NamePrefix}-service
+      Cluster: !Ref EcsCluster
+      TaskDefinition: !Ref EcsTaskDefinition
+      LaunchType: FARGATE
+      # Exactly one task, and never scale out: the game engine keeps room state in
+      # process memory, so a second task would serve a different, empty state.
+      DesiredCount: 1
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          Subnets:
+            - !Ref TaskSubnet1
+            - !Ref TaskSubnet2
+          SecurityGroups:
+            - !Ref EcsSecurityGroup
+          # Keep ENABLED unless the task subnets gain a NAT gateway - DISABLED
+          # removes all egress and the task cannot pull its image.
+          AssignPublicIp: ENABLED
+      LoadBalancers:
+        - TargetGroupArn: !Ref AlbTargetGroup
+          ContainerName: !Sub ${NamePrefix}-backend
+          ContainerPort: 8000
+      HealthCheckGracePeriodSeconds: 30
+      DeploymentConfiguration:
+        MinimumHealthyPercent: 100
+        MaximumPercent: 200
+        DeploymentCircuitBreaker:
+          Enable: true
+          Rollback: true
+
+  # ─── CloudWatch Logs ──────────────────────────────────────────────────────────
+  LogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /ecs/${NamePrefix}-backend
+      RetentionInDays: 30
+
+Outputs:
+  AlbDnsName:
+    Description: ALB DNS name - the API base URL.
+    Value: !GetAtt Alb.DNSName
+
+  EcrRepositoryUri:
+    Description: ECR repository URI - CI pushes here.
+    Value: !GetAtt EcrRepository.RepositoryUri
+
+  EcsClusterName:
+    Description: ECS cluster name.
+    Value: !Ref EcsCluster
+
+  EcsServiceName:
+    Description: ECS service name.
+    Value: !GetAtt EcsService.Name
+
+  TaskDefinitionFamily:
+    Description: Task definition family - CI describes this to get the current revision.
+    Value: !Ref EcsTaskDefinition

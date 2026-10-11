@@ -7,6 +7,10 @@ Arcade FTW 后端骨架（FastAPI + Python 3.12）。与现有 `cyber_ai_festiva
 ## 结构
 
 ```
+.github/workflows/
+└── deploy.yml         # CI：构建 → ECR → ECS → 验证 /health
+infra/
+└── cloudformation.yml # 后端基础设施（ECR / ALB / ECS / IAM / 日志）
 app/
 ├── main.py            # FastAPI 入口（CORS + /health + WS 路由）
 ├── config.py          # pydantic-settings 环境变量
@@ -33,7 +37,34 @@ uvicorn app.main:app --reload --port 5071
 
 验证：`curl http://localhost:5071/health`
 
-## 部署注意
+## 部署
 
-- 镜像必须 `--platform linux/amd64`（Mac 是 arm64，否则 Fargate 起不来）。
-- WS 是**进程内内存态**：单进程运行，禁止多 worker。
+### 基础设施（CloudFormation）
+
+[`infra/cloudformation.yml`](infra/cloudformation.yml) —— **只覆盖后端**资源：ECR、ALB + Target Group、ECS cluster/task/service、安全组、IAM role、日志组。
+
+不包含（刻意）：VPC/子网（与旧系统共享，作为参数传入）、RDS（placeholder 阶段）、S3 + CloudFront（前端 repo 的范围）。
+
+```bash
+aws cloudformation deploy \
+  --template-file infra/cloudformation.yml \
+  --stack-name arcade-ftw \
+  --capabilities CAPABILITY_NAMED_IAM \
+  --parameter-overrides \
+    VpcId=vpc-xxx \
+    PublicSubnet1=subnet-xxx PublicSubnet2=subnet-xxx \
+    TaskSubnet1=subnet-xxx TaskSubnet2=subnet-xxx \
+    ApiKey=xxx
+```
+
+### CI
+
+[`.github/workflows/deploy.yml`](.github/workflows/deploy.yml) —— `push main` → 构建镜像 → 推 ECR → **拉线上 task definition 再改镜像** → `update-service` → 验证 `/health`。
+
+需要仓库 secret：`AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`。未配置时**只告警不失败**（`check-creds` 守卫）。
+
+### 注意事项
+
+- 本地构建镜像必须 `--platform linux/amd64`（Mac 是 arm64，否则 Fargate 起不来）；CI 的 runner 本身是 amd64，不受影响。
+- WS 是**进程内内存态**：单进程运行，禁止多 worker；`DesiredCount` 固定 1。
+- **部署会清空房间**（替换 task 即重启进程）——活动期间禁止部署。

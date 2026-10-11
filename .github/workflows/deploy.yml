@@ -1,0 +1,143 @@
+name: Deploy backend to AWS ECS
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+# Never let two deploys race: the service holds in-memory room state, so an
+# interrupted rollout is worse than a delayed one.
+concurrency:
+  group: deploy-backend
+  cancel-in-progress: false
+
+env:
+  AWS_REGION: ap-south-1
+  ECR_REPOSITORY: arcade-ftw-backend
+  ECS_CLUSTER: arcade-ftw-cluster
+  ECS_SERVICE: arcade-ftw-service
+  TASK_FAMILY: arcade-ftw-task
+  CONTAINER_NAME: arcade-ftw-backend
+  ALB_NAME: arcade-ftw-alb
+
+jobs:
+  check-creds:
+    runs-on: ubuntu-latest
+    outputs:
+      has-creds: ${{ steps.check.outputs.has-creds }}
+    steps:
+      - name: Check if AWS credentials are available
+        id: check
+        run: |
+          if [ -n "${{ secrets.AWS_ACCESS_KEY_ID }}" ] && [ -n "${{ secrets.AWS_SECRET_ACCESS_KEY }}" ]; then
+            echo "has-creds=true" >> $GITHUB_OUTPUT
+            echo "AWS credentials found."
+          else
+            echo "has-creds=false" >> $GITHUB_OUTPUT
+            echo "::warning::AWS credentials missing - skipping deploy. Set AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY in Settings -> Secrets and variables -> Actions."
+          fi
+
+  build-and-deploy:
+    needs: check-creds
+    if: needs.check-creds.outputs.has-creds == 'true'
+    runs-on: ubuntu-latest
+    # To switch from static keys to OIDC, add these permissions, replace the
+    # "Configure AWS credentials" step with role-to-assume, and delete the secrets.
+    # permissions:
+    #   id-token: write
+    #   contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Verify ECS service exists
+        id: verify
+        run: |
+          if aws ecs describe-services --cluster "$ECS_CLUSTER" --services "$ECS_SERVICE" \
+               --query "services[0].status" --output text 2>/dev/null | grep -q ACTIVE; then
+            echo "ECS service $ECS_SERVICE is ACTIVE."
+            echo "service-exists=true" >> $GITHUB_OUTPUT
+          else
+            echo "service-exists=false" >> $GITHUB_OUTPUT
+            echo "::warning::ECS service $ECS_SERVICE not found or not ACTIVE. Deploy infra/cloudformation.yml first; skipping this run."
+          fi
+
+      - name: Login to Amazon ECR
+        if: steps.verify.outputs.service-exists == 'true'
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build, tag, and push image to Amazon ECR
+        if: steps.verify.outputs.service-exists == 'true'
+        id: build-image
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          docker build -t "$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" .
+          docker tag "$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" "$ECR_REGISTRY/$ECR_REPOSITORY:latest"
+          docker push "$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG"
+          docker push "$ECR_REGISTRY/$ECR_REPOSITORY:latest"
+          echo "image=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" >> $GITHUB_OUTPUT
+
+      # Read the live task definition instead of a checked-in copy, so the
+      # registered revision never drifts from what ECS is actually running.
+      - name: Fetch current task definition
+        if: steps.verify.outputs.service-exists == 'true'
+        run: |
+          aws ecs describe-task-definition \
+            --task-definition "$TASK_FAMILY" \
+            --query taskDefinition > task-definition.json
+
+      # register-task-definition rejects these read-only fields.
+      - name: Strip read-only fields
+        if: steps.verify.outputs.service-exists == 'true'
+        run: |
+          jq 'del(.taskDefinitionArn, .revision, .status, .requiresAttributes,
+                  .compatibilities, .registeredAt, .registeredBy)' \
+            task-definition.json > task-definition.clean.json
+
+      - name: Render new image into task definition
+        if: steps.verify.outputs.service-exists == 'true'
+        id: task-def
+        uses: aws-actions/amazon-ecs-render-task-definition@v1
+        with:
+          task-definition: task-definition.clean.json
+          container-name: ${{ env.CONTAINER_NAME }}
+          image: ${{ steps.build-image.outputs.image }}
+
+      - name: Deploy to Amazon ECS
+        if: steps.verify.outputs.service-exists == 'true'
+        uses: aws-actions/amazon-ecs-deploy-task-definition@v1
+        with:
+          task-definition: ${{ steps.task-def.outputs.task-definition }}
+          service: ${{ env.ECS_SERVICE }}
+          cluster: ${{ env.ECS_CLUSTER }}
+          wait-for-service-stability: true
+
+      - name: Verify health endpoint
+        if: steps.verify.outputs.service-exists == 'true'
+        run: |
+          ALB_DNS=$(aws elbv2 describe-load-balancers \
+            --names "$ALB_NAME" \
+            --query "LoadBalancers[0].DNSName" --output text)
+          echo "ALB DNS: $ALB_DNS"
+          for attempt in 1 2 3 4 5; do
+            if curl -fsS --max-time 10 "http://$ALB_DNS/health"; then
+              echo
+              echo "Health check passed."
+              exit 0
+            fi
+            echo "Attempt $attempt failed; retrying in 15s..."
+            sleep 15
+          done
+          echo "::error::Health endpoint did not respond after 5 attempts."
+          exit 1
