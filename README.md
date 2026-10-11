@@ -63,7 +63,23 @@ aws cloudformation deploy \
 
 需要仓库 secret：`AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`。未配置时**只告警不失败**（`check-creds` 守卫）。
 
-### 注意事项
+## 本地校验
+
+```bash
+# 静态检查
+actionlint .github/workflows/deploy.yml
+hadolint Dockerfile
+
+# 真机构建 + 冒烟（镜像必须是 linux/amd64，与 Fargate 一致）
+docker build --platform linux/amd64 -t arcade-ftw-backend:local .
+docker run --rm -p 1692:8000 arcade-ftw-backend:local &
+curl -s http://127.0.0.1:1692/health
+```
+
+> 基础镜像用 `public.ecr.aws/docker/library/python:3.12-slim` 而非 Docker Hub：避开 Docker Hub 匿名拉取限流（会让 CI 随机失败）。
+> 需要 `actionlint` / `hadolint`：`brew install actionlint hadolint`。
+
+## 注意事项
 
 - 本地构建镜像必须 `--platform linux/amd64`（Mac 是 arm64，否则 Fargate 起不来）；CI 的 runner 本身是 amd64，不受影响。
 - WS 是**进程内内存态**：单进程运行，禁止多 worker；`DesiredCount` 固定 1。

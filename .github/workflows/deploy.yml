@@ -31,10 +31,10 @@ jobs:
         id: check
         run: |
           if [ -n "${{ secrets.AWS_ACCESS_KEY_ID }}" ] && [ -n "${{ secrets.AWS_SECRET_ACCESS_KEY }}" ]; then
-            echo "has-creds=true" >> $GITHUB_OUTPUT
+            echo "has-creds=true" >> "$GITHUB_OUTPUT"
             echo "AWS credentials found."
           else
-            echo "has-creds=false" >> $GITHUB_OUTPUT
+            echo "has-creds=false" >> "$GITHUB_OUTPUT"
             echo "::warning::AWS credentials missing - skipping deploy. Set AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY in Settings -> Secrets and variables -> Actions."
           fi
 
@@ -64,9 +64,9 @@ jobs:
           if aws ecs describe-services --cluster "$ECS_CLUSTER" --services "$ECS_SERVICE" \
                --query "services[0].status" --output text 2>/dev/null | grep -q ACTIVE; then
             echo "ECS service $ECS_SERVICE is ACTIVE."
-            echo "service-exists=true" >> $GITHUB_OUTPUT
+            echo "service-exists=true" >> "$GITHUB_OUTPUT"
           else
-            echo "service-exists=false" >> $GITHUB_OUTPUT
+            echo "service-exists=false" >> "$GITHUB_OUTPUT"
             echo "::warning::ECS service $ECS_SERVICE not found or not ACTIVE. Deploy infra/cloudformation.yml first; skipping this run."
           fi
 
@@ -86,7 +86,7 @@ jobs:
           docker tag "$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" "$ECR_REGISTRY/$ECR_REPOSITORY:latest"
           docker push "$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG"
           docker push "$ECR_REGISTRY/$ECR_REPOSITORY:latest"
-          echo "image=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" >> $GITHUB_OUTPUT
+          echo "image=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" >> "$GITHUB_OUTPUT"
 
       # Read the live task definition instead of a checked-in copy, so the
       # registered revision never drifts from what ECS is actually running.
