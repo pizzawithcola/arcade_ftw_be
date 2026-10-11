@@ -55,6 +55,28 @@ pytest                        # 集成测试：迁移 + 读写往返
 - `/health`、`/health/db` 是唯一留在根路径的例外：ALB 直接探活 `/health`（不经过 CloudFront）。
 - **ALB 只接受来自 CloudFront 的流量**（安全组用的是 CloudFront 的源站前缀列表 `pl-9aa247f3`）。所以**直连 ALB 会超时**，验证一律走 `https://<cloudfront 域名>`。
 
+## 游戏接口
+
+| 接口 | 鉴权 | 作用 |
+|---|---|---|
+| `POST /api/auth/player` | — | 昵称登录（同名 → 同一个玩家行），返回令牌 |
+| `POST /api/auth/admin` | — | 管理员用户名 + 密码登录，返回令牌 |
+| `GET /api/auth/me` | Bearer | 这个令牌是谁 |
+| `GET /api/game/state` | — | 当前 phase / 节点 / 剩余毫秒 |
+| `POST /api/game/start` \| `pause` \| `resume` \| `finish` | **管理员** | 播放控制 |
+| `POST /api/game/go/{index}` | **管理员** | 跳到任意节点（也是从 `finished` 复活的方式）|
+| `WS /api/ws` | — | 只收推送：连上先推当前状态，之后每次状态变化扇出给所有连接 |
+
+管理员控制走 **HTTP 而不是 WS**：可鉴权、能在 `/docs` 里直接点、失败返回真实状态码；状态变化再由 WS 广播给所有人。
+
+### 引擎如何推进
+
+`app/engine.py` 用 `asyncio` 后台任务 + `time.monotonic()` **自主推进**主流程，管理员只能干预。
+
+- 倒计时基于**单调时钟**，宿主改系统时间不会让节目跳。
+- 暂停是**冻结剩余时间**（而不是挪动 deadline），所以暂停多久，恢复后剩余时间都不变。
+- 快照里给的是 `remaining_ms`（时长）而不是绝对截止时刻，前端据此在本机算倒计时——**机器时钟有偏差只会整体平移，不会改变节点长度**。
+
 ## 数据库
 
 - **schema 只由 Alembic 迁移创建**，应用启动不建表。新增改动：`alembic revision --autogenerate -m "..."` → 检查生成的脚本 → `alembic upgrade head`。
@@ -82,7 +104,9 @@ aws cloudformation deploy \
     VpcId=vpc-xxx \
     PublicSubnet1=subnet-xxx PublicSubnet2=subnet-xxx \
     TaskSubnet1=subnet-xxx TaskSubnet2=subnet-xxx \
-    ApiKey=xxx \
+    SecretKey=xxx \
+    AdminUsername=admin \
+    AdminPassword=xxx \
     DesiredCount=0
 ```
 
@@ -100,6 +124,8 @@ aws cloudformation deploy \
 | `DbSubnetGroupName` | `default-vpc-0dda76b286c45fc27`（现有，未新建）|
 | `DbInstanceClass` | `db.t4g.micro` |
 | `DbEngineVersion` | `16.15`（必须给具体小版本，`16` 会被拒）|
+| `SecretKey` | 令牌签名密钥；换掉它 = 一次性让所有已发令牌失效 |
+| `AdminUsername` / `AdminPassword` | 管理员（主持）登录凭据 |
 | `DesiredCount` | 首次 `0`，上线后 `1` |
 
 > ⛔ **不要用 `subnet-0034e389a5d549ae3`（ap-south-1c）作任务子网**：ALB 未覆盖该 AZ，会导致「约 1/3 概率部署失败」（旧系统踩过）。RDS 的子网组不受此限制。

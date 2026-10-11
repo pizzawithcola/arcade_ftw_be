@@ -5,8 +5,14 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
     app_name: str = "Arcade FTW Backend"
-    api_key: str = "dev-key"
     cors_origins: str = ""
+
+    # Signs the bearer tokens issued by /api/auth/*.
+    secret_key: str = "dev-secret-change-me"
+    admin_username: str = "admin"
+    admin_password: str = "admin"
+    # How long an issued token stays valid.
+    token_ttl_seconds: int = 60 * 60 * 12
 
     db_host: str = "localhost"
     db_port: int = 5432

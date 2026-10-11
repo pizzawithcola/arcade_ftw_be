@@ -1,9 +1,29 @@
+"""The game engine: advances the main flow on its own clock.
+
+Two things make this more than a loop over a list:
+
+* The countdown uses ``time.monotonic()``, so an NTP step or a host clock change
+  cannot make the show jump. Clients are told the remaining time instead of
+  being trusted to compute it from their own clock.
+* Pausing *freezes the remaining time* rather than moving a wall-clock deadline,
+  which is what makes pause/resume exact no matter how long the pause lasts.
+
+The admin never drives the flow: it only intervenes (pause, resume, finish, jump
+to a node). Everything else happens because time passed.
+"""
+
 from __future__ import annotations
 
+import asyncio
+import logging
+import time
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from enum import Enum
 
 from app.flow import ROUND_FLOW
+
+logger = logging.getLogger(__name__)
 
 
 class Phase(str, Enum):
@@ -13,46 +33,182 @@ class Phase(str, Enum):
     FINISHED = "finished"
 
 
+Listener = Callable[[], Awaitable[None]]
+
+
 @dataclass
-class GameState:
+class Engine:
+    flow: list[dict] = field(default_factory=lambda: [dict(node) for node in ROUND_FLOW])
     phase: Phase = Phase.IDLE
-    current_index: int = 0
-    flow: list[dict] = field(default_factory=lambda: list(ROUND_FLOW))
+    index: int = 0
 
+    # Monotonic instant the current node ends at. None while idle, paused or
+    # finished, which is what makes "remaining_ms" meaningful only when playing.
+    _deadline: float | None = None
+    # Remaining seconds, kept while paused so resuming is exact.
+    _remaining: float = 0.0
+    _runner: asyncio.Task | None = None
+    _wake: asyncio.Event | None = None
+    _listeners: list[Listener] = field(default_factory=list)
+
+    # ─── observers ────────────────────────────────────────────────────────────
+    def subscribe(self, listener: Listener) -> None:
+        """Called after every state change. Used to broadcast to all clients."""
+        if listener not in self._listeners:
+            self._listeners.append(listener)
+
+    async def _notify(self) -> None:
+        for listener in list(self._listeners):
+            try:
+                await listener()
+            except Exception:  # noqa: BLE001 - one bad client must not stall the show
+                logger.exception("state listener failed")
+
+    # ─── helpers ──────────────────────────────────────────────────────────────
     @property
-    def current(self) -> dict | None:
-        if 0 <= self.current_index < len(self.flow):
-            return self.flow[self.current_index]
-        return None
+    def node_count(self) -> int:
+        return len(self.flow)
 
-    def start(self) -> None:
-        self.phase = Phase.PLAYING
-        self.current_index = 0
+    def _node(self) -> dict | None:
+        return self.flow[self.index] if 0 <= self.index < self.node_count else None
 
-    def pause(self) -> None:
-        if self.phase is Phase.PLAYING:
-            self.phase = Phase.PAUSED
+    def _arm(self) -> None:
+        """Start the current node's countdown now, not on the runner's next tick.
 
-    def resume(self) -> None:
-        if self.phase is Phase.PAUSED:
-            self.phase = Phase.PLAYING
+        Arming synchronously matters: clients that read the state the instant
+        /game/start returns would otherwise see a remaining time of zero.
+        """
+        self._deadline = time.monotonic() + self._duration()
+        self._remaining = 0.0
 
-    def finish(self) -> None:
-        self.phase = Phase.FINISHED
-
-    def go_to(self, index: int) -> None:
-        if 0 <= index < len(self.flow):
-            self.current_index = index
-
-    def next(self) -> None:
-        self.go_to(self.current_index + 1)
+    def _duration(self) -> float:
+        node = self._node() or {}
+        try:
+            duration = float(node.get("duration_sec") or 0)
+        except (TypeError, ValueError):
+            duration = 0.0
+        # A node without a usable duration still gets a beat on screen.
+        return duration if duration > 0 else 1.0
 
     def snapshot(self) -> dict:
+        if self.phase is Phase.PLAYING and self._deadline is not None:
+            remaining = max(0.0, self._deadline - time.monotonic())
+        elif self.phase is Phase.PAUSED:
+            remaining = max(0.0, self._remaining)
+        else:
+            remaining = 0.0
+
         return {
             "phase": self.phase.value,
-            "current_index": self.current_index,
-            "current": self.current,
+            "index": self.index,
+            "node_count": self.node_count,
+            "node": self._node(),
+            "remaining_ms": int(remaining * 1000),
+            "server_time_ms": int(time.time() * 1000),
         }
 
+    # ─── lifecycle ────────────────────────────────────────────────────────────
+    def _ensure_runner(self) -> None:
+        if self._runner is None or self._runner.done():
+            self._wake = asyncio.Event()
+            self._runner = asyncio.create_task(self._run(), name="game-engine")
 
-game_state = GameState()
+    async def start(self) -> None:
+        if self.phase is Phase.PLAYING:
+            return
+        self.index = 0
+        self.phase = Phase.PLAYING
+        self._arm()
+        self._ensure_runner()
+        assert self._wake is not None
+        self._wake.set()
+        await self._notify()
+
+    async def pause(self) -> None:
+        if self.phase is not Phase.PLAYING:
+            return
+        if self._deadline is not None:
+            self._remaining = max(0.0, self._deadline - time.monotonic())
+            self._deadline = None
+        self.phase = Phase.PAUSED
+        assert self._wake is not None
+        self._wake.set()
+        await self._notify()
+
+    async def resume(self) -> None:
+        if self.phase is not Phase.PAUSED:
+            return
+        self.phase = Phase.PLAYING
+        self._deadline = time.monotonic() + (self._remaining or self._duration())
+        assert self._wake is not None
+        self._wake.set()
+        await self._notify()
+
+    async def finish(self) -> None:
+        self.phase = Phase.FINISHED
+        self._deadline = None
+        self._remaining = 0.0
+        if self._wake is not None:
+            self._wake.set()
+        await self._notify()
+
+    async def go_to(self, index: int) -> None:
+        """Jump to any node. Also the way out of FINISHED."""
+        if not 0 <= index < self.node_count:
+            raise ValueError(f"node index {index} out of range")
+        was_idle = self.phase in (Phase.IDLE, Phase.FINISHED)
+        self.index = index
+        self._deadline = None
+        self._remaining = 0.0
+        if was_idle:
+            self.phase = Phase.PLAYING
+            self._ensure_runner()
+        if self.phase is Phase.PLAYING:
+            self._arm()
+        assert self._wake is not None
+        self._wake.set()
+        await self._notify()
+
+    # ─── the clock ────────────────────────────────────────────────────────────
+    async def _run(self) -> None:
+        try:
+            while True:
+                if self.phase is Phase.FINISHED:
+                    return
+                if self.phase is not Phase.PLAYING:
+                    assert self._wake is not None
+                    await self._wake.wait()
+                    self._wake.clear()
+                    continue
+
+                if self._deadline is None:
+                    self._deadline = time.monotonic() + self._duration()
+
+                timeout = max(0.0, self._deadline - time.monotonic())
+                try:
+                    assert self._wake is not None
+                    await asyncio.wait_for(self._wake.wait(), timeout=timeout)
+                    self._wake.clear()
+                    continue  # a control action changed the state; re-evaluate
+                except TimeoutError:
+                    pass
+
+                self._deadline = None
+                if self.index + 1 >= self.node_count:
+                    self.phase = Phase.FINISHED
+                    await self._notify()
+                    return
+                self.index += 1
+                # Arm before announcing: clients count down from this snapshot,
+                # so a new node must never be broadcast with zero time left.
+                self._arm()
+                await self._notify()
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 - never let the show die silently
+            logger.exception("game engine crashed")
+            self.phase = Phase.FINISHED
+            await self._notify()
+
+
+engine = Engine()

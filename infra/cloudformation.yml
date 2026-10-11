@@ -49,10 +49,22 @@ Parameters:
     Type: AWS::EC2::Subnet::Id
     Description: Subnet 2 for the ECS tasks - ALB-enabled AZ and egress required.
 
-  ApiKey:
+  SecretKey:
     Type: String
-    Description: Value for the X-API-Key header. Placeholder phase only - move to Secrets Manager before the event.
+    Description: >
+      Signs the bearer tokens issued by /api/auth/*. Changing it logs everybody
+      out, which is also a useful way to invalidate every token at once.
     NoEcho: true
+
+  AdminUsername:
+    Type: String
+    Default: admin
+    Description: The show operator's username.
+
+  AdminPassword:
+    Type: String
+    NoEcho: true
+    Description: The show operator's password. Move to Secrets Manager before the event.
 
   CertificateArn:
     Type: String
@@ -293,8 +305,12 @@ Resources:
           Environment:
             - Name: LOG_LEVEL
               Value: INFO
-            - Name: API_KEY
-              Value: !Ref ApiKey
+            - Name: SECRET_KEY
+              Value: !Ref SecretKey
+            - Name: ADMIN_USERNAME
+              Value: !Ref AdminUsername
+            - Name: ADMIN_PASSWORD
+              Value: !Ref AdminPassword
             - Name: DB_HOST
               Value: !GetAtt DbInstance.Endpoint.Address
             - Name: DB_PORT

@@ -1,16 +1,33 @@
 import logging
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 
 from fastapi import APIRouter, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
 
+from app import auth, game
 from app.config import cors_origin_list, settings
-from app.database import engine
+from app.database import engine as db_engine
+from app.engine import engine
+from app.manager import manager
 from app.ws import router as ws_router
 
 logger = logging.getLogger(__name__)
 
-app = FastAPI(title=settings.app_name)
+
+async def broadcast_state() -> None:
+    await manager.broadcast({"type": "state", "payload": engine.snapshot()})
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+    # Every state change reaches every screen through this one listener.
+    engine.subscribe(broadcast_state)
+    yield
+
+
+app = FastAPI(title=settings.app_name, lifespan=lifespan)
 
 origins = cors_origin_list()
 app.add_middleware(
@@ -25,6 +42,8 @@ app.add_middleware(
 # single behavior to proxy it and a new endpoint never needs an infra change.
 # /health stays at the root because the load balancer probes it directly.
 api = APIRouter(prefix="/api")
+api.include_router(auth.router)
+api.include_router(game.router)
 api.include_router(ws_router)
 app.include_router(api)
 
@@ -42,7 +61,7 @@ async def health() -> dict:
 @app.get("/health/db")
 async def health_db() -> dict:
     try:
-        async with engine.connect() as connection:
+        async with db_engine.connect() as connection:
             await connection.execute(text("SELECT 1"))
     except Exception as exc:  # noqa: BLE001 - any failure means the database is unusable
         logger.warning("database health check failed: %s", exc)
