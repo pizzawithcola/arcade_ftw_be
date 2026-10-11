@@ -26,12 +26,12 @@ python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 cp .env.example .env
-uvicorn app.main:app --reload --port 8010
+uvicorn app.main:app --reload --port 5070
 ```
 
-> 端口不要用 1688（现有系统占用），另起独立端口。
+> 端口不要用 1688（旧系统占用），本项目后端用 **5070**、前端用 **5060**。
 
-验证：`curl http://localhost:8010/health`
+验证：`curl http://localhost:5070/health`
 
 ## 部署注意
 
