@@ -14,6 +14,7 @@ concurrency:
 
 env:
   AWS_REGION: ap-south-1
+  AWS_ROLE_ARN: arn:aws:iam::866730904414:role/arcade-ftw-github-deploy
   ECR_REPOSITORY: arcade-ftw-backend
   ECS_CLUSTER: arcade-ftw-cluster
   ECS_SERVICE: arcade-ftw-service
@@ -21,41 +22,25 @@ env:
   CONTAINER_NAME: arcade-ftw-backend
   ALB_NAME: arcade-ftw-alb
 
-jobs:
-  check-creds:
-    runs-on: ubuntu-latest
-    outputs:
-      has-creds: ${{ steps.check.outputs.has-creds }}
-    steps:
-      - name: Check if AWS credentials are available
-        id: check
-        run: |
-          if [ -n "${{ secrets.AWS_ACCESS_KEY_ID }}" ] && [ -n "${{ secrets.AWS_SECRET_ACCESS_KEY }}" ]; then
-            echo "has-creds=true" >> "$GITHUB_OUTPUT"
-            echo "AWS credentials found."
-          else
-            echo "has-creds=false" >> "$GITHUB_OUTPUT"
-            echo "::warning::AWS credentials missing - skipping deploy. Set AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY in Settings -> Secrets and variables -> Actions."
-          fi
+# No long-lived AWS keys: the job exchanges a short-lived GitHub OIDC token for
+# temporary credentials. id-token: write is what makes that exchange possible.
+permissions:
+  id-token: write
+  contents: read
 
+jobs:
   build-and-deploy:
-    needs: check-creds
-    if: needs.check-creds.outputs.has-creds == 'true'
     runs-on: ubuntu-latest
-    # To switch from static keys to OIDC, add these permissions, replace the
-    # "Configure AWS credentials" step with role-to-assume, and delete the secrets.
-    # permissions:
-    #   id-token: write
-    #   contents: read
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
+      # The role is locked to this repository and branch, so a fork or a pull
+      # request cannot assume it.
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          role-to-assume: ${{ env.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
 
       - name: Verify ECS service exists
