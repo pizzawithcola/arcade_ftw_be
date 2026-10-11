@@ -157,7 +157,17 @@ hadolint Dockerfile
 docker build --platform linux/amd64 -t arcade-ftw-backend:local .
 docker run --rm -p 1692:8000 arcade-ftw-backend:local &
 curl -s http://127.0.0.1:1692/health
+
+# 测试（先 docker compose up -d 起本地库）
+pytest
 ```
+
+> ⚠️ **本机的 Python HTTP/WS 客户端会去读 macOS 系统 SOCKS 代理**（`127.0.0.1:7897`），把 `localhost` 也代理出去，于是本地请求得到 **502** 或 `requires python-socks`。本地写脚本验证时要显式绕过：
+> - `httpx.AsyncClient(..., trust_env=False)`
+> - `websockets.connect(..., proxy=None)`
+> - `curl --noproxy '*'`
+>
+> ⚠️ `pytest` 的集成测试会 **DROP SCHEMA** 再跑迁移，**绝不能指向真实库**。
 
 > 基础镜像用 `public.ecr.aws/docker/library/python:3.12-slim` 而非 Docker Hub：避开 Docker Hub 匿名拉取限流（会让 CI 随机失败）。
 > 需要 `actionlint` / `hadolint`：`brew install actionlint hadolint`。
