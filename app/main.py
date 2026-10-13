@@ -27,7 +27,17 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     yield
 
 
-app = FastAPI(title=settings.app_name, lifespan=lifespan)
+app = FastAPI(
+    title=settings.app_name,
+    lifespan=lifespan,
+    # Under /api like everything else, so the single CloudFront behavior proxies
+    # them too. At the root they fall through to the S3 origin instead, where the
+    # SPA rewrite turns a missing object into index.html - which is how /docs
+    # managed to answer 200 while serving the React app rather than Swagger.
+    docs_url="/api/docs",
+    redoc_url="/api/redoc",
+    openapi_url="/api/openapi.json",
+)
 
 origins = cors_origin_list()
 app.add_middleware(

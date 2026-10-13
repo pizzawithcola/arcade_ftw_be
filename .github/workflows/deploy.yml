@@ -192,3 +192,23 @@ jobs:
           done
           echo "::error::Database health endpoint did not come up."
           exit 1
+
+      # The docs only work under /api, the single prefix CloudFront proxies to
+      # the backend. Anywhere else is served by S3, where the SPA rewrite turns a
+      # missing object into index.html - so a broken docs URL answers 200 with the
+      # React app and no status check can tell. Assert the content type instead.
+      - name: Verify the API docs are reachable through the CDN
+        if: steps.verify.outputs.service-exists == 'true'
+        run: |
+          for attempt in 1 2 3 4 5; do
+            if curl -fsS --max-time 15 "https://$SITE_DOMAIN/api/openapi.json" \
+                 -o /tmp/openapi.json -w 'HTTP %{http_code} %{content_type}\n' \
+               && grep -q '"paths"' /tmp/openapi.json; then
+              echo "OpenAPI spec served by the backend."
+              exit 0
+            fi
+            echo "Attempt $attempt failed; retrying in 15s..."
+            sleep 15
+          done
+          echo "::error::/api/openapi.json is not being served by the backend through CloudFront."
+          exit 1

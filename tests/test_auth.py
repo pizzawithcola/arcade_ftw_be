@@ -120,3 +120,39 @@ async def test_an_admin_can_drive_the_show(client: AsyncClient, admin_headers: d
     assert (await client.post("/api/game/go/-1", headers=admin_headers)).status_code == 422
 
     assert (await client.post("/api/game/finish", headers=admin_headers)).json()["phase"] == "finished"
+
+
+async def test_an_admin_can_reset_the_show(client: AsyncClient, admin_headers: dict) -> None:
+    await client.post("/api/game/start", headers=admin_headers)
+    await client.post("/api/game/go/4", headers=admin_headers)
+
+    reset = await client.post("/api/game/reset", headers=admin_headers)
+    assert reset.status_code == 200
+    body = reset.json()
+    assert body["phase"] == Phase.IDLE.value
+    assert body["index"] == 0
+    assert body["remaining_ms"] == 0
+
+
+async def test_reset_refuses_everyone_but_an_admin(client: AsyncClient) -> None:
+    assert (await client.post("/api/game/reset")).status_code == 401
+
+
+async def test_the_docs_live_under_the_api_prefix(client: AsyncClient) -> None:
+    """They must sit under /api, the only path CloudFront proxies to the backend.
+
+    At the root they reach the S3 origin instead and the SPA rewrite answers with
+    index.html, so this silently serves the React app in production.
+    """
+    spec = await client.get("/api/openapi.json")
+    assert spec.status_code == 200
+    assert spec.headers["content-type"].startswith("application/json")
+    assert "/api/game/reset" in spec.json()["paths"]
+
+    for path in ("/api/docs", "/api/redoc"):
+        page = await client.get(path)
+        assert page.status_code == 200, path
+        assert page.headers["content-type"].startswith("text/html"), path
+
+    # The root paths must not quietly return something else.
+    assert (await client.get("/openapi.json")).status_code == 404
