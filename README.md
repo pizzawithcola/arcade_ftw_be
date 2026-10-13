@@ -59,7 +59,8 @@ pytest                        # 集成测试：迁移 + 读写往返
 
 | 接口 | 鉴权 | 作用 |
 |---|---|---|
-| `POST /api/auth/player` | — | 昵称登录（同名 → 同一个玩家行），返回令牌 |
+| `POST /api/auth/player` | — | 昵称 + 活动登录（同一活动内同名 → 同一个玩家行），返回令牌 |
+| `GET /api/auth/events` | — | 可参加的活动列表；**登录页下拉框的数据源** |
 | `POST /api/auth/admin` | — | 管理员用户名 + 密码登录，返回令牌 |
 | `GET /api/auth/me` | Bearer | 这个令牌是谁 |
 | `GET /api/game/state` | — | 当前 phase / 节点 / 剩余毫秒 |
@@ -69,6 +70,18 @@ pytest                        # 集成测试：迁移 + 读写往返
 | `WS /api/ws` | — | 只收推送：连上先推当前状态，之后每次状态变化扇出给所有连接 |
 
 管理员控制走 **HTTP 而不是 WS**：可鉴权、能在 `/api/docs` 里直接点、失败返回真实状态码；状态变化再由 WS 广播给所有人。
+
+### 活动与玩家身份
+
+活动列表的**唯一来源**是 `app/events.py`，它同时驱动 `GET /api/auth/events` 与登录校验——所以新增活动是**纯后端改动**，下拉框下次加载就自动带上。
+
+四个可选活动键：`hk_fintech_week`、`hk_employee`、`sg_fintech_week`、`sg_employee`。
+
+**玩家身份是 `(event, nickname)` 而不是昵称**：同名但参加不同活动算**两个玩家**。否则两个恰好同名的真实用户会被合并成一行、共用一个记分板。
+
+> ⚠️ `players.event` 里可能出现一个**不可选**的值 `legacy`：它由迁移回填，用于标记「`event` 字段出现之前就存在的行」。按活动统计时记得排除它。
+
+> ⚠️ `event` 字段是**由 `country` 重命名**而来（`9a1c4f0b7d21`）。原字段从未被任何接口写入，只在一个测试里出现过，所以重命名无损且保留了行 id。
 
 > ⚠️ **Swagger UI 在 `/api/docs`，不在 `/docs`。** 后端只挂在 `/api` 下，因为 CloudFront 只把 `/api/*` 代理到后端。根路径会落到 S3 源站，而 SPA 回退把「对象不存在」改写成 `index.html`——于是 `/docs` 会**返回 200 但内容是 React 页面**，任何只看状态码的检查都发现不了。CI 因此改成断言 `content-type` 与 spec 内容。
 

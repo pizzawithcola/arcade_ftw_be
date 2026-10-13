@@ -52,17 +52,67 @@ def test_an_expired_token_is_rejected() -> None:
 
 # ─── login ────────────────────────────────────────────────────────────────────
 async def test_a_nickname_always_maps_to_the_same_player(client: AsyncClient) -> None:
-    first = await client.post("/api/auth/player", json={"nickname": "repeat-player"})
-    second = await client.post("/api/auth/player", json={"nickname": "repeat-player"})
+    payload = {"nickname": "repeat-player", "event": "hk_fintech_week"}
+    first = await client.post("/api/auth/player", json=payload)
+    second = await client.post("/api/auth/player", json=payload)
 
     assert first.status_code == 200
     assert first.json()["player_id"] == second.json()["player_id"]
     assert first.json()["nickname"] == "repeat-player"
+    assert first.json()["event"] == "hk_fintech_week"
     assert decode_token(first.json()["token"]) == f"player:{first.json()['player_id']}"
 
 
+async def test_the_same_nickname_at_two_events_is_two_players(client: AsyncClient) -> None:
+    """Otherwise two different people who share a name share one scoreboard."""
+    here = await client.post(
+        "/api/auth/player", json={"nickname": "same-name", "event": "hk_employee"}
+    )
+    there = await client.post(
+        "/api/auth/player", json={"nickname": "same-name", "event": "sg_employee"}
+    )
+
+    assert here.json()["player_id"] != there.json()["player_id"]
+
+
+async def test_an_unknown_event_is_refused(client: AsyncClient) -> None:
+    response = await client.post(
+        "/api/auth/player", json={"nickname": "somebody", "event": "atlantis_fintech_week"}
+    )
+    assert response.status_code == 422
+
+
+async def test_a_missing_event_is_refused(client: AsyncClient) -> None:
+    assert (await client.post("/api/auth/player", json={"nickname": "somebody"})).status_code == 422
+
+
+async def test_the_events_endpoint_lists_every_selectable_event(client: AsyncClient) -> None:
+    response = await client.get("/api/auth/events")
+    assert response.status_code == 200
+
+    events = response.json()["events"]
+    assert [event["key"] for event in events] == [
+        "hk_fintech_week",
+        "hk_employee",
+        "sg_fintech_week",
+        "sg_employee",
+    ]
+    # The dropdown needs something to show; the key alone would be unreadable.
+    assert all(event["label"] for event in events)
+
+    # Anything the endpoint offers must be one the login endpoint accepts.
+    for event in events:
+        accepted = await client.post(
+            "/api/auth/player", json={"nickname": "probe", "event": event["key"]}
+        )
+        assert accepted.status_code == 200, event["key"]
+
+
 async def test_a_blank_nickname_is_refused(client: AsyncClient) -> None:
-    assert (await client.post("/api/auth/player", json={"nickname": "   "})).status_code == 422
+    response = await client.post(
+        "/api/auth/player", json={"nickname": "   ", "event": "hk_employee"}
+    )
+    assert response.status_code == 422
 
 
 async def test_admin_login_checks_the_password(client: AsyncClient) -> None:
@@ -89,7 +139,9 @@ async def test_me_reports_who_holds_the_token(client: AsyncClient, admin_headers
 async def test_controls_refuse_everyone_but_an_admin(client: AsyncClient) -> None:
     assert (await client.post("/api/game/start")).status_code == 401
 
-    player = await client.post("/api/auth/player", json={"nickname": "not-the-admin"})
+    player = await client.post(
+        "/api/auth/player", json={"nickname": "not-the-admin", "event": "hk_employee"}
+    )
     player_headers = {"Authorization": f"Bearer {player.json()['token']}"}
     assert (await client.post("/api/game/start", headers=player_headers)).status_code == 401
 

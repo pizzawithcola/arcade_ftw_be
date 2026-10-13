@@ -4,8 +4,9 @@ Deliberately small: tokens are HMAC-signed payloads, so there is no session
 table to keep in sync and no server state to lose on restart.
 
 Two kinds of identity:
-  * players - just a nickname, which is the whole point of walking up to a
-    kiosk and getting going;
+  * players - a nickname plus the event they are attending, because a name is
+    all it takes to walk up to a kiosk and get going, and the event is what
+    keeps the scoreboards apart;
   * admin - username and password, because the person driving the show is the
     only one who should pause or jump the flow.
 """
@@ -26,6 +27,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.database import get_session
+from app.events import EVENTS, EVENT_KEYS
 from app.models import Player
 
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -102,6 +104,7 @@ async def require_admin(subject: str | None = Depends(current_subject)) -> str:
 # ─── endpoints ────────────────────────────────────────────────────────────────
 class PlayerLogin(BaseModel):
     nickname: str = Field(min_length=1, max_length=64)
+    event: str
 
 
 class AdminLogin(BaseModel):
@@ -109,21 +112,33 @@ class AdminLogin(BaseModel):
     password: str
 
 
-@router.post("/player", summary="Log in with a nickname")
+@router.get("/events", summary="The events a player can sign in for")
+async def list_events() -> dict:
+    """Drives the login dropdown, so the page never offers an unsupported value."""
+    return {"events": EVENTS}
+
+
+@router.post("/player", summary="Log in with a nickname and an event")
 async def login_player(
     body: PlayerLogin,
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    """Players just need a name; the same nickname always maps to one row."""
+    """Players just need a name; the same name within one event maps to one row."""
     nickname = body.nickname.strip()
     if not nickname:
         raise HTTPException(status_code=422, detail="nickname required")
+    if body.event not in EVENT_KEYS:
+        # The dropdown is built from the same list, so this only happens to a
+        # client that skipped it - which is exactly who needs refusing.
+        raise HTTPException(status_code=422, detail=f"unknown event: {body.event}")
 
     player = (
-        await session.execute(select(Player).where(Player.nickname == nickname))
+        await session.execute(
+            select(Player).where(Player.nickname == nickname, Player.event == body.event)
+        )
     ).scalar_one_or_none()
     if player is None:
-        player = Player(nickname=nickname)
+        player = Player(nickname=nickname, event=body.event)
         session.add(player)
         await session.commit()
         await session.refresh(player)
@@ -132,6 +147,7 @@ async def login_player(
         "token": create_token(f"{PLAYER_PREFIX}{player.id}"),
         "player_id": player.id,
         "nickname": player.nickname,
+        "event": player.event,
     }
 
 

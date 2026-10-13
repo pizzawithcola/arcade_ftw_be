@@ -8,7 +8,7 @@ from app.models import Player, Score
 
 async def test_player_and_score_round_trip() -> None:
     async with SessionLocal() as session:
-        player = Player(nickname="integration-tester", country="AE")
+        player = Player(nickname="integration-tester", event="hk_employee")
         session.add(player)
         await session.flush()
         session.add(Score(player_id=player.id, stage_key="hallucinate", score=42))
@@ -25,7 +25,7 @@ async def test_player_and_score_round_trip() -> None:
 async def test_one_score_row_per_player_and_stage() -> None:
     """The composite key is what lets a new stage ship without a migration."""
     async with SessionLocal() as session:
-        player = Player(nickname="unique-stage-tester")
+        player = Player(nickname="unique-stage-tester", event="sg_employee")
         session.add(player)
         await session.flush()
         session.add(Score(player_id=player.id, stage_key="datashadows", score=10))

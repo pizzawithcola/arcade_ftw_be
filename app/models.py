@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, Integer, String, func
+from sqlalchemy import DateTime, ForeignKey, Integer, String, UniqueConstraint, func
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
@@ -10,10 +10,17 @@ class Base(DeclarativeBase):
 
 class Player(Base):
     __tablename__ = "players"
+    __table_args__ = (
+        # Identity is per event, so the same nickname at two events is two
+        # players. A globally unique nickname would merge two different people
+        # who happened to pick the same name, and hand them one scoreboard.
+        UniqueConstraint("event", "nickname", name="uq_players_event_nickname"),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    nickname: Mapped[str] = mapped_column(String(64), unique=True, index=True)
-    country: Mapped[str | None] = mapped_column(String(8))
+    nickname: Mapped[str] = mapped_column(String(64))
+    # Which event they signed in for. Validated against app.events on the way in.
+    event: Mapped[str] = mapped_column(String(32))
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
