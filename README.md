@@ -64,7 +64,8 @@ pytest                        # 集成测试：迁移 + 读写往返
 | `GET /api/auth/me` | Bearer | 这个令牌是谁 |
 | `GET /api/game/state` | — | 当前 phase / 节点 / 剩余毫秒 |
 | `POST /api/game/start` \| `pause` \| `resume` \| `finish` | **管理员** | 播放控制 |
-| `POST /api/game/go/{index}` | **管理员** | 跳到任意节点（也是从 `finished` 复活的方式）|
+| `POST /api/game/go/{index}` | **管理员** | 跳到任意节点（也是从 `finished` / `idle` 复活的方式）|
+| `POST /api/game/reset` | **管理员** | 回到 `idle` 未开演态、第 1 节点、时钟停止（排练后交台）|
 | `WS /api/ws` | — | 只收推送：连上先推当前状态，之后每次状态变化扇出给所有连接 |
 
 管理员控制走 **HTTP 而不是 WS**：可鉴权、能在 `/docs` 里直接点、失败返回真实状态码；状态变化再由 WS 广播给所有人。

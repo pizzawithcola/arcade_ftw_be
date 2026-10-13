@@ -45,6 +45,16 @@ async def finish() -> dict:
     return engine.snapshot()
 
 
+@router.post(
+    "/reset",
+    summary="Rewind to an unstarted show at the first node",
+    dependencies=[Depends(require_admin)],
+)
+async def reset() -> dict:
+    await engine.reset()
+    return engine.snapshot()
+
+
 @router.post("/go/{index}", summary="Jump to a node", dependencies=[Depends(require_admin)])
 async def go_to(index: int) -> dict:
     try:

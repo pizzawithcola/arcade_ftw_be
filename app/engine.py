@@ -113,6 +113,31 @@ class Engine:
             self._wake = asyncio.Event()
             self._runner = asyncio.create_task(self._run(), name="game-engine")
 
+    async def _stop_runner(self) -> None:
+        """Drop the clock task, so the engine only moves on command."""
+        runner, self._runner = self._runner, None
+        if runner is not None and not runner.done():
+            runner.cancel()
+            try:
+                await runner
+            except asyncio.CancelledError:
+                pass
+
+    async def reset(self) -> None:
+        """Back to a pristine show: first node, nothing on the clock.
+
+        IDLE is unreachable once the show has started, which left no way to
+        rehearse through to the end and then hand the console over ready to run
+        from the top. Stopping the runner matters as much as the fields do: a
+        live runner would sit on the wake event with nothing to wake it.
+        """
+        await self._stop_runner()
+        self.index = 0
+        self.phase = Phase.IDLE
+        self._deadline = None
+        self._remaining = 0.0
+        await self._notify()
+
     async def start(self) -> None:
         if self.phase is Phase.PLAYING:
             return
@@ -153,18 +178,21 @@ class Engine:
         await self._notify()
 
     async def go_to(self, index: int) -> None:
-        """Jump to any node. Also the way out of FINISHED."""
+        """Jump to any node. Also the way out of FINISHED and IDLE."""
         if not 0 <= index < self.node_count:
             raise ValueError(f"node index {index} out of range")
         was_idle = self.phase in (Phase.IDLE, Phase.FINISHED)
         self.index = index
         self._deadline = None
-        self._remaining = 0.0
         if was_idle:
             self.phase = Phase.PLAYING
             self._ensure_runner()
         if self.phase is Phase.PLAYING:
             self._arm()
+        else:
+            # Paused: hold the new node's full length rather than zero, so a
+            # jump does not park the screen on 0:00 for a node it has not run.
+            self._remaining = self._duration()
         assert self._wake is not None
         self._wake.set()
         await self._notify()

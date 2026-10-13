@@ -150,3 +150,78 @@ async def test_listeners_are_told_about_every_change() -> None:
     assert seen[-1] == "finished"
 
     await stop(engine)
+
+
+async def test_reset_returns_to_an_unstarted_show() -> None:
+    engine = make_engine([0.2, 0.2, 0.2])
+    await engine.start()
+    assert await wait_until(lambda: engine.index == 1)
+
+    await engine.reset()
+
+    assert engine.phase is Phase.IDLE
+    assert engine.index == 0
+    assert engine.snapshot()["remaining_ms"] == 0
+    # The clock task must be gone, not merely idle: a runner left alive would
+    # sit on the wake event with nothing left to wake it.
+    assert engine._runner is None
+
+    # And nothing may advance on its own from here.
+    await asyncio.sleep(0.4)
+    assert engine.phase is Phase.IDLE
+    assert engine.index == 0
+
+
+async def test_reset_works_from_every_phase() -> None:
+    for prepared in ("idle", "playing", "paused", "finished"):
+        engine = make_engine([0.5, 0.5])
+        if prepared != "idle":
+            await engine.start()
+        if prepared == "paused":
+            await engine.pause()
+        elif prepared == "finished":
+            await engine.finish()
+
+        await engine.reset()
+
+        assert engine.phase is Phase.IDLE, prepared
+        assert engine.index == 0, prepared
+        assert engine.snapshot()["remaining_ms"] == 0, prepared
+        assert engine._runner is None, prepared
+
+
+async def test_start_after_reset_begins_from_the_first_node() -> None:
+    engine = make_engine([0.2, 5.0])
+    await engine.start()
+    assert await wait_until(lambda: engine.index == 1)
+
+    await engine.reset()
+    await engine.start()
+
+    assert engine.phase is Phase.PLAYING
+    assert engine.index == 0
+    # A fresh run, so the first node gets its whole duration back.
+    assert engine.snapshot()["remaining_ms"] > 150
+
+    await stop(engine)
+
+
+async def test_jumping_while_paused_holds_the_new_nodes_length() -> None:
+    """Otherwise a jump parks the screen on 0:00 for a node it has not run."""
+    engine = make_engine([30.0, 45.0])
+    await engine.start()
+    await engine.pause()
+
+    await engine.go_to(1)
+
+    assert engine.phase is Phase.PAUSED
+    assert engine.index == 1
+    assert engine.snapshot()["remaining_ms"] == 45000
+
+    # Resuming plays the node it jumped to, for that node's full length - and
+    # must not fall back to the first node's duration.
+    await engine.resume()
+    assert engine.index == 1
+    assert engine.snapshot()["remaining_ms"] > 44000
+
+    await stop(engine)
