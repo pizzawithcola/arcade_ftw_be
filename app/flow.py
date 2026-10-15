@@ -23,7 +23,7 @@ ROUND_FLOW: list[dict] = [
     {"type": "intro", "title": "Welcome", "duration_sec": 10},
     {"type": "game", "game": "hallucination", "title": "Hallucination", "duration_sec": 66},
     {"type": "quiz", "title": "Quiz round 1", "duration_sec": 46},
-    {"type": "game", "game": "data_shadow", "title": "Data Shadow", "duration_sec": 30},
+    {"type": "game", "game": "data_shadow", "title": "Data Shadow", "duration_sec": 51},
     {"type": "quiz", "title": "Quiz round 2", "duration_sec": 46},
     {"type": "game", "game": "sabotage", "title": "Sabotage", "duration_sec": 30},
     {"type": "quiz", "title": "Ultimate Quiz", "duration_sec": 46},
