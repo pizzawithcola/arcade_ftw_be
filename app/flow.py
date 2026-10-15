@@ -12,9 +12,10 @@ A node has two identifying fields:
 That is what lets the two ordinary quiz rounds and the ultimate quiz all be
 ``type: "quiz"`` without the code having to tell them apart.
 
-Durations for the built screens are content-driven: each question gets 20s and
-the node adds a few seconds of tail, so the engine never cuts a game off before
-its final reveal. The screens that are still placeholders keep short values.
+Durations for the built screens are content-driven: the node has to outlast its
+questions, or the engine advances mid-question. Hallucination is two 30s
+questions and each quiz is two 20s, plus a few seconds of tail for the final
+reveal. The screens that are still placeholders keep short values.
 """
 
 # Intro - Hallucination - Quiz - Data Shadow - Quiz - Sabotage - Ultimate Quiz - Wrap up
