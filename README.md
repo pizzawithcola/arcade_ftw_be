@@ -63,11 +63,12 @@ pytest                        # 集成测试：迁移 + 读写往返
 | `GET /api/auth/events` | — | 可参加的活动列表；**登录页下拉框的数据源** |
 | `POST /api/auth/admin` | — | 管理员用户名 + 密码登录，返回令牌 |
 | `GET /api/auth/me` | Bearer | 这个令牌是谁 |
-| `GET /api/game/state` | — | 当前 phase / 节点 / 剩余毫秒 |
-| `POST /api/game/start` \| `pause` \| `resume` \| `finish` | **管理员** | 播放控制 |
-| `POST /api/game/go/{index}` | **管理员** | 跳到任意节点（也是从 `finished` / `idle` 复活的方式）|
-| `POST /api/game/reset` | **管理员** | 回到 `idle` 未开演态、第 1 节点、时钟停止（排练后交台）|
-| `WS /api/ws` | — | 只收推送：连上先推当前状态，之后每次状态变化扇出给所有连接 |
+| `GET /api/rooms` | **display** | 所有房间及其状态、在线人数 |
+| `GET /api/rooms/{code}/state` | — | 该房间的 phase / 节点 / 剩余毫秒 |
+| `POST /api/rooms/{code}/start` \| `pause` \| `resume` \| `finish` | **管理员（full）** | 播放控制 |
+| `POST /api/rooms/{code}/go/{index}` | **管理员（full）** | 跳到任意节点（也是从 `finished` / `idle` 复活的方式）|
+| `POST /api/rooms/{code}/reset` | **管理员（full）** | 回到 `idle` 未开演态、第 1 节点、时钟停止（排练后交台）|
+| `WS /api/ws?room={code}` | — | 只收推送：连上先推该房间当前状态，之后只扇出给**同房间**的连接 |
 
 管理员控制走 **HTTP 而不是 WS**：可鉴权、能在 `/api/docs` 里直接点、失败返回真实状态码；状态变化再由 WS 广播给所有人。
 

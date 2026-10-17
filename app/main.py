@@ -9,21 +9,17 @@ from sqlalchemy import text
 from app import auth, game
 from app.config import cors_origin_list, settings
 from app.database import engine as db_engine
-from app.engine import engine
-from app.manager import manager
+from app.rooms import rooms
 from app.ws import router as ws_router
 
 logger = logging.getLogger(__name__)
 
 
-async def broadcast_state() -> None:
-    await manager.broadcast({"type": "state", "payload": engine.snapshot()})
-
-
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-    # Every state change reaches every screen through this one listener.
-    engine.subscribe(broadcast_state)
+    # The registry wires one listener per room, so a change in one show never
+    # reaches the screens watching another.
+    rooms.ensure_ready()
     yield
 
 
