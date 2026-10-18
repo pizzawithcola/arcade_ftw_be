@@ -29,13 +29,39 @@ class Player(Base):
     nickname: Mapped[str] = mapped_column(String(64))
     # Which event they signed in for. Validated against app.events on the way in.
     event: Mapped[str] = mapped_column(String(32))
+    # Which room they are playing in. Nullable because a player exists from the
+    # moment they log in, and only joins a room when they enter one.
+    room_code: Mapped[str | None] = mapped_column(
+        ForeignKey("rooms.code", ondelete="SET NULL"), index=True
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
 
+    room: Mapped["Room | None"] = relationship(back_populates="players")
     score: Mapped["Score | None"] = relationship(
         back_populates="player", uselist=False, cascade="all, delete-orphan"
     )
+
+
+class Room(Base):
+    """A single running show.
+
+    The engine behind a room lives in memory, but the room itself is a row so
+    that membership survives a restart and the admin panel can list what exists.
+    """
+
+    __tablename__ = "rooms"
+
+    code: Mapped[str] = mapped_column(String(32), primary_key=True)
+    # Optional: a room can serve any event, so this is a label rather than a key.
+    event: Mapped[str | None] = mapped_column(String(32))
+    label: Mapped[str | None] = mapped_column(String(80))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    players: Mapped[list[Player]] = relationship(back_populates="room")
 
 
 class Score(Base):

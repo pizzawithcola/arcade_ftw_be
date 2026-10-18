@@ -145,6 +145,31 @@ async def require_admin(claims: Claims | None = Depends(current_claims)) -> Clai
     return claims
 
 
+async def require_player(
+    claims: Claims | None = Depends(current_claims),
+    session: AsyncSession = Depends(get_session),
+) -> Player:
+    """The player row behind a player token.
+
+    Admin tokens are refused: the operator does not play, and letting one through
+    would mean it could claim a place in a room and show up on the roster.
+    """
+    unauthorized = HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="player token required",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+    if claims is None or not claims.subject.startswith(PLAYER_PREFIX):
+        raise unauthorized
+    try:
+        player = await session.get(Player, int(claims.subject[len(PLAYER_PREFIX) :]))
+    except ValueError:
+        raise unauthorized from None
+    if player is None:
+        raise unauthorized
+    return player
+
+
 # ─── endpoints ────────────────────────────────────────────────────────────────
 class PlayerLogin(BaseModel):
     nickname: str = Field(min_length=1, max_length=64)

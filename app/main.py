@@ -6,7 +6,7 @@ from fastapi import APIRouter, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
 
-from app import auth, game
+from app import auth, game, roster
 from app.config import cors_origin_list, settings
 from app.database import engine as db_engine
 from app.rooms import rooms
@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # The registry wires one listener per room, so a change in one show never
     # reaches the screens watching another.
-    rooms.ensure_ready()
+    await rooms.load()
     yield
 
 
@@ -50,6 +50,7 @@ app.add_middleware(
 api = APIRouter(prefix="/api")
 api.include_router(auth.router)
 api.include_router(game.router)
+api.include_router(roster.router)
 api.include_router(ws_router)
 app.include_router(api)
 

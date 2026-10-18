@@ -17,10 +17,12 @@ app/
 ├── main.py            # FastAPI 入口（CORS + /health + /health/db + /api 路由）
 ├── config.py          # pydantic-settings 环境变量；database_url 由 DB_* 拼装
 ├── database.py        # async engine + session factory
-├── models.py          # players / scores（长表，不是 game1~5）
+├── models.py          # rooms / players / scores（宽表 + 生成列 total_score）
 ├── migrations/        # Alembic（env.py 从环境变量取 DSN）
 ├── engine.py          # 状态机：idle / playing / paused / finished + current_index
 ├── flow.py            # 主线流程配置（改流程不改代码）
+├── rooms.py           # RoomRegistry：每房间一个内存引擎，启动时从库里读房间
+├── roster.py          # 房间成员：加入房间、房间名单 + 每人总分
 ├── ws.py              # WebSocket 端点（占位，挂在 /api/ws）
 └── question_types/    # 题型注册表（插件化）
     ├── base.py        # 题型协议
@@ -63,11 +65,13 @@ pytest                        # 集成测试：迁移 + 读写往返
 | `GET /api/auth/events` | — | 可参加的活动列表；**登录页下拉框的数据源** |
 | `POST /api/auth/admin` | — | 管理员用户名 + 密码登录，返回令牌 |
 | `GET /api/auth/me` | Bearer | 这个令牌是谁 |
-| `GET /api/rooms` | **display** | 所有房间及其状态、在线人数 |
+| `GET /api/rooms` | **display** | 所有房间及其状态、已加入人数、在线连接数 |
 | `GET /api/rooms/{code}/state` | — | 该房间的 phase / 节点 / 剩余毫秒 |
 | `POST /api/rooms/{code}/start` \| `pause` \| `resume` \| `finish` | **管理员（full）** | 播放控制 |
 | `POST /api/rooms/{code}/go/{index}` | **管理员（full）** | 跳到任意节点（也是从 `finished` / `idle` 复活的方式）|
 | `POST /api/rooms/{code}/reset` | **管理员（full）** | 回到 `idle` 未开演态、第 1 节点、时钟停止（排练后交台）|
+| `POST /api/rooms/{code}/join` | **玩家** | 把当前玩家记入该房间（每次进页面都调，重连后仍在原房间）|
+| `GET /api/rooms/{code}/players` | **display** | 房间名单 + 每人 `total_score`，按总分倒序，无分数行视为 0 |
 | `WS /api/ws?room={code}` | — | 只收推送：连上先推该房间当前状态，之后只扇出给**同房间**的连接 |
 
 管理员控制走 **HTTP 而不是 WS**：可鉴权、能在 `/api/docs` 里直接点、失败返回真实状态码；状态变化再由 WS 广播给所有人。
@@ -97,7 +101,10 @@ pytest                        # 集成测试：迁移 + 读写往返
 ## 数据库
 
 - **schema 只由 Alembic 迁移创建**，应用启动不建表。新增改动：`alembic revision --autogenerate -m "..."` → 检查生成的脚本 → `alembic upgrade head`。
-- 计分是**长表** `scores(player_id, stage_key, score)`，加一个 stage 不需要改 schema。
+- 三张表：`rooms(code PK, event, label, created_at)`、`players(..., room_code → rooms.code ON DELETE SET NULL)`、`scores(player_id PK, 四个分项 + 生成列 total_score)`。
+- 计分是**宽表**（四个游戏各一列 + 数据库生成列 `total_score`），不是长表——被问的查询是「按 total 排名」。加第五个游戏需要一次迁移。
+- **房间是数据**：`rooms` 表是房间的真相来源，`alembic` 迁移里 seed 了 `main`。启动时 `rooms.load()` 读库建引擎；**读库失败只警告并退回默认房间**，否则 DB 抖动会让任务启动失败、被 ALB 反复重启，把内存里的节目全清掉。
+- `players.room_code` 可空：登录就建行，**进房间**才写归属（`POST /api/rooms/{code}/join`）。删房间只会把成员置空，不会删人。
 - `/health` **刻意不碰数据库**（ALB 用它探活，DB 抖动不该重启任务、清空内存房间）；数据库状态看 `/health/db`。
 - 测试会**先 DROP SCHEMA 再用迁移重建**，所以绝不能指向真实库——请只对 `docker-compose` 起的本地库运行 `pytest`。
 

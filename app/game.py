@@ -13,9 +13,13 @@ change.
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy import func, select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth import Claims, require_admin, require_display
+from app.database import get_session
 from app.engine import Engine
+from app.models import Player
 from app.rooms import rooms
 
 router = APIRouter(prefix="/rooms", tags=["rooms"])
@@ -28,10 +32,32 @@ def _engine(code: str) -> Engine:
     return engine
 
 
-@router.get("", summary="Every room with its state and client count")
-async def list_rooms(_: Claims = Depends(require_display)) -> dict:
-    """Feeds the admin panel and the display's room picker."""
-    return {"rooms": rooms.snapshots()}
+@router.get("", summary="Every room with its state, players and client count")
+async def list_rooms(
+    _: Claims = Depends(require_display),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Feeds the admin panel and the display's room picker.
+
+    `players` counts people who joined the room in the database; `clients` counts
+    live websocket connections. They differ whenever a device has joined but not
+    connected, or connected with a token from another room.
+    """
+    counts = dict(
+        (
+            await session.execute(
+                select(Player.room_code, func.count())
+                .where(Player.room_code.is_not(None))
+                .group_by(Player.room_code)
+            )
+        ).all()
+    )
+    return {
+        "rooms": [
+            {**snapshot, "players": counts.get(snapshot["code"], 0)}
+            for snapshot in rooms.snapshots()
+        ]
+    }
 
 
 @router.get("/{code}/state", summary="Current phase and node")

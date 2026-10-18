@@ -13,8 +13,12 @@ from __future__ import annotations
 
 import logging
 
+from sqlalchemy import select
+
+from app.database import SessionLocal
 from app.engine import Engine
 from app.manager import manager
+from app.models import Room
 
 logger = logging.getLogger(__name__)
 
@@ -36,9 +40,24 @@ class RoomRegistry:
         logger.info("room %s ready", code)
         return engine
 
-    def ensure_ready(self) -> None:
-        """Create the default room. Called on startup, not at import."""
-        self.ensure(DEFAULT_ROOM)
+    async def load(self) -> None:
+        """Create an engine for every room the database knows about.
+
+        Rooms are data now, so which ones exist on boot is a query rather than a
+        hardcoded default. A database failure must not stop the process from
+        starting: the show is in memory and the ALB would otherwise kill the
+        task mid-event, wiping every room's state. Falling back to the default
+        room keeps a show playable without the database.
+        """
+        try:
+            async with SessionLocal() as session:
+                result = await session.execute(select(Room.code).order_by(Room.code))
+                codes = result.scalars().all()
+        except Exception as exc:  # noqa: BLE001 - any failure means we cannot read rooms
+            logger.warning("could not load rooms from the database: %s", exc)
+            codes = [DEFAULT_ROOM]
+        for code in codes:
+            self.ensure(code)
 
     def ensure(self, code: str) -> Engine:
         engine = self._engines.get(code)
