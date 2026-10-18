@@ -1,6 +1,7 @@
 """The engine drives the show on its own clock, so these tests are the safety net."""
 
 import asyncio
+import time
 
 from app.engine import Engine, Phase
 
@@ -225,3 +226,30 @@ async def test_jumping_while_paused_holds_the_new_nodes_length() -> None:
     assert engine.snapshot()["remaining_ms"] > 44000
 
     await stop(engine)
+
+
+async def test_the_snapshot_says_which_question_is_on_screen() -> None:
+    """The big screen has no clock of its own, so the engine has to say it."""
+    engine = Engine(
+        flow=[{"type": "quiz", "duration_sec": 4, "questions": 2, "seconds_each": 2}]
+    )
+    # Not started: the first question, with no countdown running.
+    assert engine.snapshot()["question"] == {
+        "index": 0,
+        "count": 2,
+        "seconds_each": 2,
+        "remaining_ms": 0,
+    }
+
+    engine.phase = Phase.PLAYING
+    engine._deadline = time.monotonic() + 3.5  # half a second into question 0
+    assert engine.snapshot()["question"]["index"] == 0
+    assert engine.snapshot()["question"]["remaining_ms"] > 1000
+
+    engine._deadline = time.monotonic() + 1.5  # two and a half seconds in
+    assert engine.snapshot()["question"]["index"] == 1
+
+
+async def test_a_node_without_questions_reports_none() -> None:
+    engine = make_engine()
+    assert engine.snapshot()["question"] is None

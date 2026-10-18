@@ -70,6 +70,15 @@ async def test_a_round_gets_the_next_generated_code(client: AsyncClient, admin_h
     assert int(second.json()["code"].split("-")[1]) == int(first.json()["code"].split("-")[1]) + 1
 
 
+async def test_players_can_ask_which_room_is_current(client: AsyncClient, admin_headers: dict) -> None:
+    """No token: a device has to find the room before it has any other right."""
+    newest = (await client.post("/api/rooms", json={}, headers=admin_headers)).json()["code"]
+    found = await client.get("/api/rooms/current")
+    assert found.status_code == 200
+    assert found.json()["code"] == newest
+    assert found.json()["phase"] == "idle"
+
+
 async def test_the_newest_room_is_the_current_one(
     client: AsyncClient, admin_headers: dict, display_headers: dict
 ) -> None:

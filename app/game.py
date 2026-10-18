@@ -146,6 +146,28 @@ def _next_round_code(codes: list[str]) -> str:
     return f"round-{highest + 1}"
 
 
+@router.get("/current", summary="The room players join")
+async def current_room(session: AsyncSession = Depends(get_session)) -> dict:
+    """Public on purpose: a player's device has to find the room before it has
+    any other right to ask. Only the code and the phase are exposed.
+
+    Players do not scan: their iPad lands on the login page between rounds and
+    whatever round is newest is the one they join.
+    """
+    room = (
+        await session.execute(
+            select(Room).order_by(Room.created_at.desc(), Room.code.desc()).limit(1)
+        )
+    ).scalar_one_or_none()
+    if room is None:
+        raise HTTPException(status_code=404, detail="no room yet")
+    engine = rooms.get(room.code)
+    return {
+        "code": room.code,
+        "phase": engine.snapshot()["phase"] if engine is not None else "idle",
+    }
+
+
 @router.get("/{code}", summary="One room: metadata, headcount and state")
 async def room_detail(
     code: str,

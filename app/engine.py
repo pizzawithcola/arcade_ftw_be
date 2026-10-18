@@ -104,7 +104,37 @@ class Engine:
             "node_count": self.node_count,
             "node": self._node(),
             "remaining_ms": int(remaining * 1000),
+            "question": self._question(remaining),
             "server_time_ms": int(time.time() * 1000),
+        }
+
+    def _question(self, remaining: float) -> dict | None:
+        """Which question inside the current node is on screen.
+
+        Derived from the node clock rather than reported by the devices: every
+        screen then agrees with every other one, and a device that reconnects
+        mid-question lands on the right question without having to be told.
+        """
+        node = self._node() or {}
+        count = node.get("questions")
+        seconds_each = node.get("seconds_each")
+        if not count or not seconds_each:
+            return None
+
+        duration_ms = float(node.get("duration_sec") or 0) * 1000
+        # Idle and finished have no clock running, so show the first question
+        # rather than whichever one the maths would land on at zero remaining.
+        if self.phase not in (Phase.PLAYING, Phase.PAUSED):
+            return {"index": 0, "count": count, "seconds_each": seconds_each, "remaining_ms": 0}
+
+        elapsed_ms = max(0.0, duration_ms - remaining * 1000)
+        each_ms = float(seconds_each) * 1000
+        index = min(count - 1, int(elapsed_ms // each_ms))
+        return {
+            "index": index,
+            "count": count,
+            "seconds_each": seconds_each,
+            "remaining_ms": max(0, int(each_ms - (elapsed_ms - index * each_ms))),
         }
 
     # ─── lifecycle ────────────────────────────────────────────────────────────

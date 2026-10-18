@@ -73,6 +73,7 @@ pytest                        # 集成测试：迁移 + 读写往返
 | `POST /api/rooms/{code}/reset` | **管理员（full）** | 回到 `idle` 未开演态、第 1 节点、时钟停止（排练后交台）|
 | `POST /api/rooms/{code}/join` | **玩家** | 把当前玩家记入该房间（每次进页面都调，重连后仍在原房间）|
 | `GET /api/rooms/{code}/players` | **已登录** | 房间名单，按总分倒序。admin/display 得到 `player_id/event/total_score`，玩家**只得到昵称**（等待室用）|
+| `GET /api/rooms/current` | — | 当前轮的 `{code, phase}`；**玩家端靠它跟随当前轮**（只暴露这两个字段）|
 | `POST /api/rooms` | **管理员（full）** | 开新一轮：code 可省略（自动 `round-N`），写库并**立刻建引擎**（否则刚拿到的房间码打开是 404）|
 | `GET /api/rooms/{code}` | **display** | 单个房间的元信息 + 状态 |
 | `PATCH /api/rooms/{code}` | **管理员（full）** | 改 `event` / `label`；**不支持改 code**（code 已在 URL、已印的二维码和玩家归属里）|
@@ -105,6 +106,7 @@ pytest                        # 集成测试：迁移 + 读写往返
 
 `app/engine.py` 用 `asyncio` 后台任务 + `time.monotonic()` **自主推进**主流程，管理员只能干预。
 
+- 快照里的 `question` 让**每块屏都知道现在是第几题**：节点声明 `questions` / `seconds_each`，引擎按节点时钟算，设备不需要上报。
 - 倒计时基于**单调时钟**，宿主改系统时间不会让节目跳。
 - 暂停是**冻结剩余时间**（而不是挪动 deadline），所以暂停多久，恢复后剩余时间都不变。
 - 快照里给的是 `remaining_ms`（时长）而不是绝对截止时刻，前端据此在本机算倒计时——**机器时钟有偏差只会整体平移，不会改变节点长度**。
