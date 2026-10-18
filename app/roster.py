@@ -12,11 +12,20 @@ room has to be on the roster from the start, so a missing score reads as zero.
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.auth import Claims, require_display, require_player
+from app.auth import (
+    ADMIN_SUBJECT,
+    Claims,
+    free_nickname,
+    require_admin,
+    require_player,
+    require_signed_in,
+)
 from app.database import get_session
+from app.events import EVENT_KEYS
 from app.models import Player, Room, Score
 from app.rooms import rooms
 
@@ -58,27 +67,90 @@ async def join(
     }
 
 
-@router.get("/{code}/players", summary="The room roster with each player's total")
-async def players(
+class NewPlayer(BaseModel):
+    nickname: str = Field(min_length=1, max_length=64)
+    event: str
+
+
+@router.post(
+    "/{code}/players",
+    summary="Add a player to a room without them signing in",
+    status_code=201,
+)
+async def add_player(
     code: str,
-    _: Claims = Depends(require_display),
+    body: NewPlayer,
+    _: Claims = Depends(require_admin),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    """Feeds the waiting room and the admin panel, best score first."""
-    _known_room(code)
-    rows = await session.execute(
-        select(
-            Player.id,
-            Player.nickname,
-            Player.event,
-            func.coalesce(Score.total_score, 0).label("total_score"),
-        )
-        .outerjoin(Score, Score.player_id == Player.id)
-        .where(Player.room_code == code)
-        .order_by(func.coalesce(Score.total_score, 0).desc(), Player.id)
+    """Operator-created membership.
+
+    Same as a login plus a join, done on the player's behalf - useful for a
+    dropped iPad mid-show, where the person is in the room but their device is
+    not. A taken nickname is numbered exactly like a login, so this can never
+    merge two people.
+    """
+    room = await session.get(Room, code)
+    if room is None:
+        raise HTTPException(status_code=404, detail=f"unknown room: {code}")
+    nickname = body.nickname.strip()
+    if not nickname:
+        raise HTTPException(status_code=422, detail="nickname required")
+    if body.event not in EVENT_KEYS:
+        raise HTTPException(status_code=422, detail=f"unknown event: {body.event}")
+
+    player = Player(
+        nickname=await free_nickname(nickname, body.event, session),
+        event=body.event,
+        room_code=code,
     )
+    session.add(player)
+    await session.commit()
+    await session.refresh(player)
+    return {
+        "player_id": player.id,
+        "nickname": player.nickname,
+        "event": player.event,
+        "room": player.room_code,
+    }
+
+
+@router.get("/{code}/players", summary="The room roster")
+async def players(
+    code: str,
+    claims: Claims = Depends(require_signed_in),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Feeds the waiting room and the admin panel, best score first.
+
+    Players see only the names, because the waiting room is a list of who is
+    here. Scores and event are for the operator and the big screen; the same
+    endpoint would otherwise be a leaderboard every iPad can poll.
+    """
+    _known_room(code)
+    rows = (
+        await session.execute(
+            select(
+                Player.id,
+                Player.nickname,
+                Player.event,
+                func.coalesce(Score.total_score, 0).label("total_score"),
+            )
+            .outerjoin(Score, Score.player_id == Player.id)
+            .where(Player.room_code == code)
+            .order_by(func.coalesce(Score.total_score, 0).desc(), Player.id)
+        )
+    ).all()
+
+    if claims.subject != ADMIN_SUBJECT:
+        return {
+            "room": code,
+            "count": len(rows),
+            "players": [{"nickname": row.nickname} for row in rows],
+        }
     return {
         "room": code,
+        "count": len(rows),
         "players": [
             {
                 "player_id": row.id,

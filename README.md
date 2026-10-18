@@ -22,7 +22,8 @@ app/
 ├── engine.py          # 状态机：idle / playing / paused / finished + current_index
 ├── flow.py            # 主线流程配置（改流程不改代码）
 ├── rooms.py           # RoomRegistry：每房间一个内存引擎，启动时从库里读房间
-├── roster.py          # 房间成员：加入房间、房间名单 + 每人总分
+├── roster.py          # 房间成员：加入房间、房间名单（玩家只看到名字）
+├── players.py         # 管理员用的玩家 / 分数接口（改分、删人级联删分）
 ├── ws.py              # WebSocket 端点（占位，挂在 /api/ws）
 └── question_types/    # 题型注册表（插件化）
     ├── base.py        # 题型协议
@@ -71,7 +72,17 @@ pytest                        # 集成测试：迁移 + 读写往返
 | `POST /api/rooms/{code}/go/{index}` | **管理员（full）** | 跳到任意节点（也是从 `finished` / `idle` 复活的方式）|
 | `POST /api/rooms/{code}/reset` | **管理员（full）** | 回到 `idle` 未开演态、第 1 节点、时钟停止（排练后交台）|
 | `POST /api/rooms/{code}/join` | **玩家** | 把当前玩家记入该房间（每次进页面都调，重连后仍在原房间）|
-| `GET /api/rooms/{code}/players` | **display** | 房间名单 + 每人 `total_score`，按总分倒序，无分数行视为 0 |
+| `GET /api/rooms/{code}/players` | **已登录** | 房间名单，按总分倒序。admin/display 得到 `player_id/event/total_score`，玩家**只得到昵称**（等待室用）|
+| `POST /api/rooms` | **管理员（full）** | 建房间：写库并**立刻建引擎**（否则刚拿到的房间码打开是 404）|
+| `GET /api/rooms/{code}` | **display** | 单个房间的元信息 + 状态 |
+| `PATCH /api/rooms/{code}` | **管理员（full）** | 改 `event` / `label`；**不支持改 code**（code 已在 URL、已印的二维码和玩家归属里）|
+| `DELETE /api/rooms/{code}` | **管理员（full）** | 删房间；**进行中（playing/paused）拒绝删除**（409）。成员由 DB 置空，不删人 |
+| `POST /api/rooms/{code}/players` | **管理员（full）** | 替玩家建成员（设备掉了也照样在名单上），重名自动编号 |
+| `GET /api/players` \| `GET /api/players/{id}` | **display** | 查玩家（可 `?room=` / `?event=` 过滤），带 `total_score` 与四个分项 |
+| `PATCH /api/players/{id}` | **管理员（full）** | 改昵称 / 活动 / 所属房间；`room_code: null` 表示移出房间，省略表示不动 |
+| `DELETE /api/players/{id}` | **管理员（full）** | 删玩家，**分数由外键级联一起删** |
+| `PUT /api/players/{id}/score` | **管理员（full）** | 设置分项（未给的分项保持不变），首次写入自动建行 |
+| `POST /api/players/{id}/score/adjust` | **管理员（full）** | 按增量加/减分（游戏上报「+20」用这个）|
 | `WS /api/ws?room={code}` | — | 只收推送：连上先推该房间当前状态，之后只扇出给**同房间**的连接 |
 
 管理员控制走 **HTTP 而不是 WS**：可鉴权、能在 `/api/docs` 里直接点、失败返回真实状态码；状态变化再由 WS 广播给所有人。
@@ -105,6 +116,7 @@ pytest                        # 集成测试：迁移 + 读写往返
 - 计分是**宽表**（四个游戏各一列 + 数据库生成列 `total_score`），不是长表——被问的查询是「按 total 排名」。加第五个游戏需要一次迁移。
 - **房间是数据**：`rooms` 表是房间的真相来源，`alembic` 迁移里 seed 了 `main`。启动时 `rooms.load()` 读库建引擎；**读库失败只警告并退回默认房间**，否则 DB 抖动会让任务启动失败、被 ALB 反复重启，把内存里的节目全清掉。
 - `players.room_code` 可空：登录就建行，**进房间**才写归属（`POST /api/rooms/{code}/join`）。删房间只会把成员置空，不会删人。
+- `scores` 属于玩家（`ON DELETE CASCADE`）：**删玩家就删分**，不需要应用层清理，也不会有分数挂在已删的人上。`total_score` 是生成列，接口**只接受四个分项**——直接写 total 会被 pydantic 忽略，库里也会拒。
 - `/health` **刻意不碰数据库**（ALB 用它探活，DB 抖动不该重启任务、清空内存房间）；数据库状态看 `/health/db`。
 - 测试会**先 DROP SCHEMA 再用迁移重建**，所以绝不能指向真实库——请只对 `docker-compose` 起的本地库运行 `pytest`。
 

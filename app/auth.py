@@ -145,6 +145,21 @@ async def require_admin(claims: Claims | None = Depends(current_claims)) -> Clai
     return claims
 
 
+async def require_signed_in(claims: Claims | None = Depends(current_claims)) -> Claims:
+    """Any identity: the operator, the big screen, or a player.
+
+    Only for reads whose content is safe for everyone. Callers still have to
+    narrow what they return by subject - see the roster.
+    """
+    if claims is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="not signed in",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    return claims
+
+
 async def require_player(
     claims: Claims | None = Depends(current_claims),
     session: AsyncSession = Depends(get_session),
@@ -209,7 +224,7 @@ async def _player_from_token(token: str | None, event: str, session: AsyncSessio
     return player
 
 
-async def _free_nickname(nickname: str, event: str, session: AsyncSession) -> str:
+async def free_nickname(nickname: str, event: str, session: AsyncSession) -> str:
     """First free `nickname`, `nickname (2)`, `nickname (3)`…
 
     Players bring their own device now, so two people really can both be "Alex".
@@ -250,7 +265,7 @@ async def login_player(
     player = await _player_from_token(body.token, body.event, session)
     if player is None:
         player = Player(
-            nickname=await _free_nickname(nickname, body.event, session),
+            nickname=await free_nickname(nickname, body.event, session),
             event=body.event,
         )
         session.add(player)

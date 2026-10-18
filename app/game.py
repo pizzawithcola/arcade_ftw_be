@@ -12,14 +12,19 @@ change.
 
 from __future__ import annotations
 
+import re
+from datetime import datetime
+
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import func, select
+from pydantic import BaseModel, Field
+from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth import Claims, require_admin, require_display
 from app.database import get_session
-from app.engine import Engine
-from app.models import Player
+from app.engine import Engine, Phase
+from app.events import EVENT_KEYS
+from app.models import Player, Room
 from app.rooms import rooms
 
 router = APIRouter(prefix="/rooms", tags=["rooms"])
@@ -57,6 +62,119 @@ async def list_rooms(
             {**snapshot, "players": counts.get(snapshot["code"], 0)}
             for snapshot in rooms.snapshots()
         ]
+    }
+
+
+# Lowercase, no leading dash, at most 32: it lands in URLs, paths and the join QR,
+# and a code with a slash or a capital would make `/r/{code}` ambiguous.
+_ROOM_CODE = re.compile(r"^[a-z0-9][a-z0-9-]{1,31}$")
+
+
+class NewRoom(BaseModel):
+    code: str
+    event: str | None = None
+    label: str | None = Field(default=None, max_length=80)
+
+
+class RoomPatch(BaseModel):
+    event: str | None = None
+    label: str | None = Field(default=None, max_length=80)
+
+
+def _check_event(event: str | None) -> None:
+    if event is not None and event not in EVENT_KEYS:
+        raise HTTPException(status_code=422, detail=f"unknown event: {event}")
+
+
+@router.post("", status_code=201, summary="Create a room")
+async def create_room(
+    body: NewRoom,
+    _: Claims = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """A new room is a row plus an engine: the show is playable the moment it exists."""
+    if not _ROOM_CODE.match(body.code):
+        raise HTTPException(
+            status_code=422,
+            detail="code must be lowercase letters, digits and dashes (2-32 chars)",
+        )
+    _check_event(body.event)
+    if await session.get(Room, body.code) is not None:
+        raise HTTPException(status_code=409, detail=f"room already exists: {body.code}")
+
+    room = Room(code=body.code, event=body.event, label=body.label)
+    session.add(room)
+    await session.commit()
+    await session.refresh(room)
+    # The engine is built before answering, so a client that immediately opens
+    # the room URL does not get a 404 for a room that was just created.
+    rooms.ensure(body.code)
+    return _room_body(room, rooms.get(body.code))
+
+
+@router.get("/{code}", summary="One room: metadata, headcount and state")
+async def room_detail(
+    code: str,
+    _: Claims = Depends(require_display),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    room = await session.get(Room, code)
+    if room is None:
+        raise HTTPException(status_code=404, detail=f"unknown room: {code}")
+    return _room_body(room, _engine(code))
+
+
+@router.patch("/{code}", summary="Rename a room or change its event")
+async def patch_room(
+    code: str,
+    body: RoomPatch,
+    _: Claims = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Changing the code is refused rather than supported: the code is in URLs,
+    QR codes already printed and players' stored membership."""
+    room = await session.get(Room, code)
+    if room is None:
+        raise HTTPException(status_code=404, detail=f"unknown room: {code}")
+    _check_event(body.event)
+    if body.event is not None:
+        room.event = body.event
+    if body.label is not None:
+        room.label = body.label
+    await session.commit()
+    await session.refresh(room)
+    return _room_body(room, _engine(code))
+
+
+@router.delete("/{code}", status_code=204, summary="Delete a room")
+async def delete_room(
+    code: str,
+    _: Claims = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+) -> None:
+    """Refused while a show is running, because deleting the engine would strand
+    every iPad in the room mid-round. Players stay in the database with no room."""
+    engine = _engine(code)
+    if engine.snapshot()["phase"] in (Phase.PLAYING, Phase.PAUSED):
+        raise HTTPException(
+            status_code=409,
+            detail="room is playing; finish or reset it before deleting",
+        )
+    # A statement rather than session.delete(): the row's members have to be
+    # released by the database (ON DELETE SET NULL), not loaded and rewritten.
+    await session.execute(delete(Room).where(Room.code == code))
+    await session.commit()
+    rooms.remove(code)
+
+
+def _room_body(room: Room, engine: Engine | None) -> dict:
+    created = room.created_at
+    return {
+        "code": room.code,
+        "event": room.event,
+        "label": room.label,
+        "created_at": created.isoformat() if isinstance(created, datetime) else created,
+        "state": engine.snapshot() if engine is not None else None,
     }
 
 

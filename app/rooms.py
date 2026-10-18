@@ -69,6 +69,12 @@ class RoomRegistry:
     def get(self, code: str) -> Engine | None:
         return self._engines.get(code)
 
+    def remove(self, code: str) -> None:
+        """Forget a room. Clients still connected to it simply stop hearing news."""
+        engine = self._engines.pop(code, None)
+        if engine is not None:
+            logger.info("room %s removed", code)
+
     def codes(self) -> list[str]:
         return sorted(self._engines)
 
