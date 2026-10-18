@@ -57,9 +57,19 @@ async def list_rooms(
             )
         ).all()
     )
+    # label and event come from the row, not the engine: they are metadata the
+    # operator table shows next to the live state.
+    meta = {
+        row.code: {"event": row.event, "label": row.label}
+        for row in (await session.execute(select(Room.code, Room.event, Room.label))).all()
+    }
     return {
         "rooms": [
-            {**snapshot, "players": counts.get(snapshot["code"], 0)}
+            {
+                **snapshot,
+                "players": counts.get(snapshot["code"], 0),
+                **meta.get(snapshot["code"], {"event": None, "label": None}),
+            }
             for snapshot in rooms.snapshots()
         ]
     }

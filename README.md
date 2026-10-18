@@ -66,7 +66,7 @@ pytest                        # 集成测试：迁移 + 读写往返
 | `GET /api/auth/events` | — | 可参加的活动列表；**登录页下拉框的数据源** |
 | `POST /api/auth/admin` | — | 管理员用户名 + 密码登录，返回令牌 |
 | `GET /api/auth/me` | Bearer | 这个令牌是谁 |
-| `GET /api/rooms` | **display** | 所有房间及其状态、已加入人数、在线连接数 |
+| `GET /api/rooms` | **display** | 所有房间及其状态、`label` / `event`、已加入人数、在线连接数 |
 | `GET /api/rooms/{code}/state` | — | 该房间的 phase / 节点 / 剩余毫秒 |
 | `POST /api/rooms/{code}/start` \| `pause` \| `resume` \| `finish` | **管理员（full）** | 播放控制 |
 | `POST /api/rooms/{code}/go/{index}` | **管理员（full）** | 跳到任意节点（也是从 `finished` / `idle` 复活的方式）|

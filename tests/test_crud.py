@@ -59,6 +59,21 @@ async def test_a_new_room_is_playable_immediately(
     assert "crud-alpha" in [room["code"] for room in listed.json()["rooms"]]
 
 
+async def test_the_room_list_carries_the_row_metadata(
+    client: AsyncClient, admin_headers: dict, display_headers: dict
+) -> None:
+    """The operator's room table shows label and event, so the list needs them."""
+    await client.post(
+        "/api/rooms",
+        json={"code": "crud-meta", "label": "Metadata room", "event": "sg_fintech_week"},
+        headers=admin_headers,
+    )
+    listed = await client.get("/api/rooms", headers=display_headers)
+    entry = next(r for r in listed.json()["rooms"] if r["code"] == "crud-meta")
+    assert entry["label"] == "Metadata room"
+    assert entry["event"] == "sg_fintech_week"
+
+
 async def test_a_duplicate_room_code_is_refused(
     client: AsyncClient, admin_headers: dict
 ) -> None:
