@@ -66,14 +66,14 @@ pytest                        # 集成测试：迁移 + 读写往返
 | `GET /api/auth/events` | — | 可参加的活动列表；**登录页下拉框的数据源** |
 | `POST /api/auth/admin` | — | 管理员用户名 + 密码登录，返回令牌 |
 | `GET /api/auth/me` | Bearer | 这个令牌是谁 |
-| `GET /api/rooms` | **display** | 所有房间及其状态、`label` / `event`、已加入人数、在线连接数 |
+| `GET /api/rooms` | **display** | `{current, rooms}`：房间按新到旧，`current` 是最近创建的那一轮；含状态、`label` / `event`、已加入人数、在线连接数 |
 | `GET /api/rooms/{code}/state` | — | 该房间的 phase / 节点 / 剩余毫秒 |
 | `POST /api/rooms/{code}/start` \| `pause` \| `resume` \| `finish` | **管理员（full）** | 播放控制 |
 | `POST /api/rooms/{code}/go/{index}` | **管理员（full）** | 跳到任意节点（也是从 `finished` / `idle` 复活的方式）|
 | `POST /api/rooms/{code}/reset` | **管理员（full）** | 回到 `idle` 未开演态、第 1 节点、时钟停止（排练后交台）|
 | `POST /api/rooms/{code}/join` | **玩家** | 把当前玩家记入该房间（每次进页面都调，重连后仍在原房间）|
 | `GET /api/rooms/{code}/players` | **已登录** | 房间名单，按总分倒序。admin/display 得到 `player_id/event/total_score`，玩家**只得到昵称**（等待室用）|
-| `POST /api/rooms` | **管理员（full）** | 建房间：写库并**立刻建引擎**（否则刚拿到的房间码打开是 404）|
+| `POST /api/rooms` | **管理员（full）** | 开新一轮：code 可省略（自动 `round-N`），写库并**立刻建引擎**（否则刚拿到的房间码打开是 404）|
 | `GET /api/rooms/{code}` | **display** | 单个房间的元信息 + 状态 |
 | `PATCH /api/rooms/{code}` | **管理员（full）** | 改 `event` / `label`；**不支持改 code**（code 已在 URL、已印的二维码和玩家归属里）|
 | `DELETE /api/rooms/{code}` | **管理员（full）** | 删房间；**进行中（playing/paused）拒绝删除**（409）。成员由 DB 置空，不删人 |

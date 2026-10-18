@@ -59,6 +59,27 @@ async def test_a_new_room_is_playable_immediately(
     assert "crud-alpha" in [room["code"] for room in listed.json()["rooms"]]
 
 
+async def test_a_round_gets_the_next_generated_code(client: AsyncClient, admin_headers: dict) -> None:
+    """Starting a round is one POST with no code to invent."""
+    first = await client.post("/api/rooms", json={"label": "Round one"}, headers=admin_headers)
+    assert first.status_code == 201
+    assert first.json()["code"].startswith("round-")
+
+    second = await client.post("/api/rooms", json={}, headers=admin_headers)
+    assert second.status_code == 201
+    assert int(second.json()["code"].split("-")[1]) == int(first.json()["code"].split("-")[1]) + 1
+
+
+async def test_the_newest_room_is_the_current_one(
+    client: AsyncClient, admin_headers: dict, display_headers: dict
+) -> None:
+    """The big screen follows `current`, so it has to be the latest round."""
+    newest = (await client.post("/api/rooms", json={}, headers=admin_headers)).json()["code"]
+    listed = await client.get("/api/rooms", headers=display_headers)
+    assert listed.json()["current"] == newest
+    assert listed.json()["rooms"][0]["code"] == newest
+
+
 async def test_the_room_list_carries_the_row_metadata(
     client: AsyncClient, admin_headers: dict, display_headers: dict
 ) -> None:

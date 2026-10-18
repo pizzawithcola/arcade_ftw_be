@@ -37,12 +37,16 @@ def _engine(code: str) -> Engine:
     return engine
 
 
-@router.get("", summary="Every room with its state, players and client count")
+@router.get("", summary="Every room, newest first, and which one is live")
 async def list_rooms(
     _: Claims = Depends(require_display),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    """Feeds the admin panel and the display's room picker.
+    """Feeds the admin panel and the big screen.
+
+    A room is one round: the operator creates a new one per round and the screens
+    follow it. So the list is newest first and `current` names the room the big
+    screen should be showing - the one with the latest `created_at`.
 
     `players` counts people who joined the room in the database; `clients` counts
     live websocket connections. They differ whenever a device has joined but not
@@ -57,22 +61,25 @@ async def list_rooms(
             )
         ).all()
     )
-    # label and event come from the row, not the engine: they are metadata the
-    # operator table shows next to the live state.
-    meta = {
-        row.code: {"event": row.event, "label": row.label}
-        for row in (await session.execute(select(Room.code, Room.event, Room.label))).all()
-    }
-    return {
-        "rooms": [
-            {
-                **snapshot,
-                "players": counts.get(snapshot["code"], 0),
-                **meta.get(snapshot["code"], {"event": None, "label": None}),
-            }
-            for snapshot in rooms.snapshots()
-        ]
-    }
+    rows = (
+        await session.execute(select(Room).order_by(Room.created_at.desc(), Room.code.desc()))
+    ).scalars()
+    live = {snapshot["code"]: snapshot for snapshot in rooms.snapshots()}
+
+    ordered = [
+        {
+            **live[row.code],
+            "players": counts.get(row.code, 0),
+            "event": row.event,
+            "label": row.label,
+            "created_at": row.created_at,
+        }
+        # A row without an engine cannot be shown or driven; loading rooms at
+        # startup is what normally keeps the two in step.
+        for row in rows
+        if row.code in live
+    ]
+    return {"current": ordered[0]["code"] if ordered else None, "rooms": ordered}
 
 
 # Lowercase, no leading dash, at most 32: it lands in URLs, paths and the join QR,
@@ -81,7 +88,8 @@ _ROOM_CODE = re.compile(r"^[a-z0-9][a-z0-9-]{1,31}$")
 
 
 class NewRoom(BaseModel):
-    code: str
+    # Blank means "give me the next round-N".
+    code: str | None = None
     event: str | None = None
     label: str | None = Field(default=None, max_length=80)
 
@@ -96,30 +104,46 @@ def _check_event(event: str | None) -> None:
         raise HTTPException(status_code=422, detail=f"unknown event: {event}")
 
 
-@router.post("", status_code=201, summary="Create a room")
+@router.post("", status_code=201, summary="Create a room for the next round")
 async def create_room(
     body: NewRoom,
     _: Claims = Depends(require_admin),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    """A new room is a row plus an engine: the show is playable the moment it exists."""
-    if not _ROOM_CODE.match(body.code):
+    """A new room is a row plus an engine: the show is playable the moment it exists.
+
+    Without a code the next `round-N` is used - starting a round should be one
+    click, not something to invent while thirty people watch.
+    """
+    codes = list((await session.execute(select(Room.code))).scalars().all())
+    code = (body.code or "").strip() or _next_round_code(codes)
+    if not _ROOM_CODE.match(code):
         raise HTTPException(
             status_code=422,
             detail="code must be lowercase letters, digits and dashes (2-32 chars)",
         )
     _check_event(body.event)
-    if await session.get(Room, body.code) is not None:
-        raise HTTPException(status_code=409, detail=f"room already exists: {body.code}")
+    if code in codes:
+        raise HTTPException(status_code=409, detail=f"room already exists: {code}")
 
-    room = Room(code=body.code, event=body.event, label=body.label)
+    room = Room(code=code, event=body.event, label=body.label)
     session.add(room)
     await session.commit()
     await session.refresh(room)
     # The engine is built before answering, so a client that immediately opens
     # the room URL does not get a 404 for a room that was just created.
-    rooms.ensure(body.code)
-    return _room_body(room, rooms.get(body.code))
+    rooms.ensure(code)
+    return _room_body(room, rooms.get(code))
+
+
+def _next_round_code(codes: list[str]) -> str:
+    """`round-1`, `round-2`, … past whatever already exists."""
+    highest = 0
+    for existing in codes:
+        match = re.fullmatch(r"round-(\d+)", existing)
+        if match:
+            highest = max(highest, int(match.group(1)))
+    return f"round-{highest + 1}"
 
 
 @router.get("/{code}", summary="One room: metadata, headcount and state")
