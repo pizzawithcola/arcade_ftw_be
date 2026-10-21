@@ -1,6 +1,6 @@
 # arcade_ftw_be
 
-Arcade FTW 后端骨架（FastAPI + Python 3.12）。与现有 `cyber_ai_festival_be` 完全隔离。
+Arcade FTW 后端（FastAPI + Python 3.12）。与现有 `cyber_ai_festival_be` 完全隔离。
 
 > 跨项目文档（系统手册 / WS 协议 / 题型契约 / AWS）见 [`../arcade_ftw_docs`](../arcade_ftw_docs)。
 
@@ -19,12 +19,12 @@ app/
 ├── database.py        # async engine + session factory
 ├── models.py          # rooms / players / scores（宽表 + 生成列 total_score）
 ├── migrations/        # Alembic（env.py 从环境变量取 DSN）
-├── engine.py          # 状态机：idle / playing / paused / finished + current_index
+├── engine.py          # 状态机：idle / playing / paused / finished + index
 ├── flow.py            # 主线流程配置（改流程不改代码）
 ├── rooms.py           # RoomRegistry：每房间一个内存引擎，启动时从库里读房间
 ├── roster.py          # 房间成员：加入房间、房间名单（玩家只看到名字）
 ├── players.py         # 管理员用的玩家 / 分数接口（改分、删人级联删分）
-├── ws.py              # WebSocket 端点（占位，挂在 /api/ws）
+├── ws.py              # WebSocket 端点：连接即推快照，之后同房间扇出
 └── question_types/    # 题型注册表（插件化）
     ├── base.py        # 题型协议
     ├── choice.py      # 选择题（示例实现）
@@ -62,7 +62,7 @@ pytest                        # 集成测试：迁移 + 读写往返
 
 | 接口 | 鉴权 | 作用 |
 |---|---|---|
-| `POST /api/auth/player` | — | 昵称 + 活动登录（同一活动内同名 → 同一个玩家行），返回令牌 |
+| `POST /api/auth/player` | — | 昵称 + 活动登录；带旧令牌认回本人，否则重名自动编号（`Alex` → `Alex (2)`），返回令牌 |
 | `GET /api/auth/events` | — | 可参加的活动列表；**登录页下拉框的数据源** |
 | `POST /api/auth/admin` | — | 管理员用户名 + 密码登录，返回令牌 |
 | `GET /api/auth/me` | Bearer | 这个令牌是谁 |
@@ -76,7 +76,7 @@ pytest                        # 集成测试：迁移 + 读写往返
 | `GET /api/rooms/current` | — | 当前轮的 `{code, phase}`；**玩家端靠它跟随当前轮**（只暴露这两个字段）|
 | `POST /api/rooms` | **管理员（full）** | 开新一轮：code 可省略（自动 `round-N`），写库并**立刻建引擎**（否则刚拿到的房间码打开是 404）|
 | `GET /api/rooms/{code}` | **display** | 单个房间的元信息 + 状态 |
-| `PATCH /api/rooms/{code}` | **管理员（full）** | 改 `event` / `label`；**不支持改 code**（code 已在 URL、已印的二维码和玩家归属里）|
+| `PATCH /api/rooms/{code}` | **管理员（full）** | 改 `event` / `label`；**不支持改 code**（code 已在 URL、`/r/{code}` 排障链接和玩家归属里）|
 | `DELETE /api/rooms/{code}` | **管理员（full）** | 删房间；**进行中（playing/paused）拒绝删除**（409）。成员由 DB 置空，不删人 |
 | `POST /api/rooms/{code}/players` | **管理员（full）** | 替玩家建成员（设备掉了也照样在名单上），重名自动编号 |
 | `GET /api/players` \| `GET /api/players/{id}` | **display** | 查玩家（可 `?room=` / `?event=` 过滤），带 `total_score` 与四个分项 |
