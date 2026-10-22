@@ -1,6 +1,11 @@
-# public.ecr.aws mirrors the Docker Hub library images without Docker Hub's
-# anonymous pull rate limits, which can fail CI builds.
-FROM public.ecr.aws/docker/library/python:3.12-slim
+# The base image is mirrored into our own ECR because public.ecr.aws and
+# Docker Hub both apply anonymous pull limits that randomly fail CI builds.
+# Refresh the mirror with:
+#   docker pull public.ecr.aws/docker/library/python:3.12-slim
+#   docker tag  public.ecr.aws/docker/library/python:3.12-slim \
+#      866730904414.dkr.ecr.ap-south-1.amazonaws.com/arcade-ftw-python-base:3.12-slim
+#   docker push 866730904414.dkr.ecr.ap-south-1.amazonaws.com/arcade-ftw-python-base:3.12-slim
+FROM 866730904414.dkr.ecr.ap-south-1.amazonaws.com/arcade-ftw-python-base:3.12-slim
 
 WORKDIR /app
 
