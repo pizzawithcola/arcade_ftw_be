@@ -90,6 +90,7 @@ def _player_body(player: Player, score: Score | None) -> dict:
         "nickname": player.nickname,
         "event": player.event,
         "room_code": player.room_code,
+        "team": player.team,
         "created_at": player.created_at,
         "total_score": score.total_score if score is not None else 0,
         "score": score_body(player.id, score),

@@ -365,3 +365,84 @@ async def test_pausing_the_room_pauses_sabotage(
     if engine is not None:
         await engine.finish()
     sabotages.remove("sab-pause")
+
+
+# ─── M5: auto-start and score settlement ─────────────────────────────────────
+async def test_auto_start_when_the_flow_reaches_the_sabotage_node(
+    client: AsyncClient, admin_headers: dict
+) -> None:
+    from sqlalchemy import select
+
+    from app.database import SessionLocal
+    from app.models import Player
+    from app.rooms import rooms
+    from app.sabotage import sabotages
+
+    await client.post("/api/rooms", json={"code": "sab-auto"}, headers=admin_headers)
+    for name in ("One", "Two", "Three", "Four"):
+        headers, _ = await _login(client, name)
+        await client.post("/api/rooms/sab-auto/join", headers=headers)
+
+    # The main flow lands on node 5 (Sabotage) and the broadcast listener
+    # starts the game, assigning teams randomly.
+    engine = rooms.get("sab-auto")
+    assert engine is not None
+    await engine.go_to(5)
+
+    sab = sabotages.get("sab-auto")
+    assert sab is not None
+    assert sab.phase == "team_reveal"
+
+    async with SessionLocal() as session:
+        players = (
+            await session.execute(select(Player).where(Player.room_code == "sab-auto"))
+        ).scalars().all()
+        teams = {player.team for player in players}
+        assert teams == {"red", "blue"}
+
+    await engine.finish()
+    sabotages.remove("sab-auto")
+
+
+async def test_finish_persists_each_members_team_score(
+    client: AsyncClient, admin_headers: dict
+) -> None:
+    from sqlalchemy import select
+
+    from app.database import SessionLocal
+    from app.models import Player, Score
+    from app.sabotage import _wire, sabotages
+
+    await client.post("/api/rooms", json={"code": "sab-settle"}, headers=admin_headers)
+    ids: dict[str, int] = {}
+    for name in ("One", "Two", "Three", "Four"):
+        headers, pid = await _login(client, name)
+        await client.post("/api/rooms/sab-settle/join", headers=headers)
+        ids[name] = pid
+
+    engine = sabotages.ensure("sab-settle")
+    engine.teams = {"red": {ids["One"], ids["Two"]}, "blue": {ids["Three"], ids["Four"]}}
+
+    # The engine reads the teams from the database when it settles, so write
+    # the same split back to the rows.
+    async with SessionLocal() as session:
+        rows = (
+            await session.execute(select(Player).where(Player.room_code == "sab-settle"))
+        ).scalars().all()
+        for player in rows:
+            player.team = "red" if player.id in engine.teams["red"] else "blue"
+        await session.commit()
+
+    _wire("sab-settle", engine)
+    engine.start()
+    engine.scores = {"red": 500, "blue": 300}
+    assert engine._on_finish is not None
+    await engine._on_finish()
+
+    async with SessionLocal() as session:
+        for name, team in (("One", "red"), ("Two", "red"), ("Three", "blue"), ("Four", "blue")):
+            score = await session.get(Score, ids[name])
+            assert score is not None
+            assert score.sabotage_score == engine.scores[team]
+
+    sabotages.remove("sab-settle")

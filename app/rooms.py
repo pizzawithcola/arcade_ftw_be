@@ -19,6 +19,7 @@ from app.database import SessionLocal
 from app.engine import Engine
 from app.manager import manager
 from app.models import Room
+from app.sabotage import auto_start_sabotage
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +34,9 @@ class RoomRegistry:
         engine = Engine()
 
         async def notify() -> None:
+            # The main flow reaching the sabotage node starts that game on its
+            # own, so the show needs no operator input at that point.
+            await auto_start_sabotage(code, engine)
             # Bound per room, so a change in one show never reaches another.
             await manager.broadcast_to(code, {"type": "state", "payload": engine.snapshot()})
 

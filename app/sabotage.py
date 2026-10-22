@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import random
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
@@ -69,6 +70,8 @@ class SabotageEngine:
     # Whether the room broadcast is already wired, so a re-start does not add
     # duplicate listeners.
     _wired: bool = False
+    # Called once the game reaches `done`, to persist team scores.
+    _on_finish: Callable[[], Awaitable[None]] | None = None
 
     # ─── observers ───────────────────────────────────────────────────────────
     def subscribe(self, listener: Callable[[], Awaitable[None]]) -> None:
@@ -345,6 +348,9 @@ class SabotageEngine:
             "attack_card": self.attack_card,
             "defence_card": self.defence_card,
             "last_result": self.last_result,
+            # Full card decks, so the screens render names, costs and
+            # descriptions without keeping their own copy of the rules.
+            "cards": {"attack": cfg.ATTACK_CARDS, "defence": cfg.DEFENCE_CARDS},
         }
 
     def _options_for(self, team: str) -> list[str]:
@@ -383,6 +389,9 @@ class SabotageEngine:
                 self._deadline = None
                 self.advance()
                 await self._notify()
+            # The game just ended: persist the team scores exactly once.
+            if self._on_finish is not None:
+                await self._on_finish()
         except asyncio.CancelledError:
             raise
         except Exception:  # noqa: BLE001 - never let the show die silently
@@ -451,11 +460,90 @@ from sqlalchemy import select  # noqa: E402
 from sqlalchemy.ext.asyncio import AsyncSession  # noqa: E402
 
 from app.auth import Claims, require_admin, require_player  # noqa: E402
-from app.database import get_session  # noqa: E402
+from app.database import SessionLocal, get_session  # noqa: E402
+from app.engine import Phase  # noqa: E402
 from app.manager import manager  # noqa: E402
-from app.models import Player  # noqa: E402
+from app.models import Player, Score  # noqa: E402
 
 router = APIRouter(prefix="/sabotage", tags=["sabotage"])
+
+
+def _wire(code: str, engine: SabotageEngine) -> None:
+    """Wire a room's broadcast and the end-of-game score write, once each."""
+    if not engine._wired:
+        async def broadcast_sabotage() -> None:
+            await manager.broadcast_to(
+                code, {"type": "sabotage", "payload": engine.snapshot()}
+            )
+
+        engine.subscribe(broadcast_sabotage)
+        engine._wired = True
+
+    async def settle_scores() -> None:
+        """Persist each player's team score into `scores.sabotage_score`.
+
+        Every competing member of a team shares the team total, so the write is
+        the same value for everyone on a side. Players never report it
+        themselves: the engine computes it and this callback lands it.
+        """
+        async with SessionLocal() as session:
+            rows = (
+                await session.execute(select(Player).where(Player.room_code == code))
+            ).scalars().all()
+            for player in rows:
+                if player.team not in ("red", "blue"):
+                    continue
+                score = await session.get(Score, player.id)
+                if score is None:
+                    score = Score(player_id=player.id)
+                    session.add(score)
+                score.sabotage_score = engine.scores[player.team]
+            await session.commit()
+
+    engine._on_finish = settle_scores
+
+
+async def auto_start_sabotage(code: str, main_engine) -> bool:
+    """Start Sabotage the moment the main flow reaches its node.
+
+    Called from the room's broadcast listener on every state change, so it must
+    be idempotent: it only acts when the flow is playing the sabotage node and
+    the sabotage engine is still in `setup`. Teams are assigned randomly if the
+    host has not done it, so the whole task runs with zero operator input.
+    """
+    node = main_engine._node() or {}
+    if node.get("game") != "sabotage":
+        return False
+    if main_engine.phase is not Phase.PLAYING:
+        return False
+    existing = sabotages.get(code)
+    if existing is not None and existing.phase != "setup":
+        return False
+
+    async with SessionLocal() as session:
+        players = (
+            await session.execute(
+                select(Player).where(Player.room_code == code).order_by(Player.id)
+            )
+        ).scalars().all()
+        ids = [player.id for player in players]
+        random.shuffle(ids)
+        split = (len(ids) + 1) // 2  # odd rooms give Red the extra player
+        red = set(ids[:split])
+        blue = set(ids[split:])
+        for player in players:
+            player.team = "red" if player.id in red else "blue"
+        await session.commit()
+
+    if not red or not blue:
+        return False
+
+    engine = sabotages.ensure(code)
+    engine.teams = {"red": red, "blue": blue}
+    _wire(code, engine)
+    engine.start()
+    await engine.run_async()
+    return True
 
 
 class VoteBody(BaseModel):
@@ -489,18 +577,7 @@ async def start_sabotage(code: str, session: AsyncSession = Depends(get_session)
 
     engine = sabotages.ensure(code)
     engine.teams = teams
-
-    # Wire the room broadcast once: every phase change fans out to the room's
-    # websockets as a `sabotage` message, alongside the show's `state`.
-    if not engine._wired:
-        async def broadcast_sabotage() -> None:
-            await manager.broadcast_to(
-                code, {"type": "sabotage", "payload": engine.snapshot()}
-            )
-
-        engine.subscribe(broadcast_sabotage)
-        engine._wired = True
-
+    _wire(code, engine)
     try:
         engine.start()
     except SabotageError as exc:
