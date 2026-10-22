@@ -25,6 +25,8 @@ app/
 ├── roster.py          # 房间成员：加入房间、房间名单、红蓝团队分配（玩家只看到名字）
 ├── players.py         # 管理员用的玩家 / 分数接口（改分、删人级联删分）
 ├── scores.py          # 玩家上报得分：按题幂等，写哪个分项由流程节点决定
+├── sabotage.py        # Sabotage 引擎：红蓝三轮攻防投票 + 状态机 + 投票/启动/状态接口
+├── sabotage_config.py # Sabotage 配置：卡牌、6×6 效果矩阵、剧本、计时（改配置不改代码）
 ├── ws.py              # WebSocket 端点：连接即推快照，之后同房间扇出
 └── question_types/    # 题型注册表（插件化）
     ├── base.py        # 题型协议
@@ -87,6 +89,9 @@ pytest                        # 集成测试：迁移 + 读写往返
 | `PUT /api/players/{id}/score` | **管理员（full）** | 设置分项（未给的分项保持不变），首次写入自动建行 |
 | `POST /api/players/{id}/score/adjust` | **管理员（full）** | 按增量加/减分（运营纠错用）|
 | `POST /api/me/score` | **玩家** | 上报自己在一题 / 整个节点上得的分数；写哪个分项由节点的 `score` 决定，按 `room:node:question` 幂等 |
+| `POST /api/sabotage/{code}/start` | **管理员（full）** | 用房间当前红蓝分队启动 Sabotage（两队非空），进入 10s 揭晓 |
+| `POST /api/sabotage/{code}/vote` | **玩家** | 投/改自己队伍的卡；只有当前行动方、且卡可投（未 spent、买得起）才接受 |
+| `GET /api/sabotage/{code}/state` | — | 当前阶段、预算、比分、已用卡、可选卡（不暴露个人投票）|
 | `WS /api/ws?room={code}` | — | 只收推送：连上先推该房间当前状态，之后只扇出给**同房间**的连接 |
 
 管理员控制走 **HTTP 而不是 WS**：可鉴权、能在 `/api/docs` 里直接点、失败返回真实状态码；状态变化再由 WS 广播给所有人。

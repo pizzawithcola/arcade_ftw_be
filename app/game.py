@@ -26,6 +26,7 @@ from app.engine import Engine, Phase
 from app.events import EVENT_KEYS
 from app.models import Player, Room
 from app.rooms import rooms
+from app.sabotage import sabotages
 
 router = APIRouter(prefix="/rooms", tags=["rooms"])
 
@@ -221,6 +222,7 @@ async def delete_room(
     await session.execute(delete(Room).where(Room.code == code))
     await session.commit()
     rooms.remove(code)
+    sabotages.remove(code)
 
 
 def _room_body(room: Room, engine: Engine | None) -> dict:
