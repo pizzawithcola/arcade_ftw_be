@@ -212,11 +212,11 @@ SCENARIOS: list[dict] = [
 # Seconds per phase. The total is roughly the 2.5-minute slot reserved in the
 # flow for this node; adjust here, not in the engine.
 TIMINGS: dict[str, int] = {
-    "team_reveal": 10,
+    "team_reveal": 8,
     "attack": 20,
     "defend": 20,
     "tie_break": 5,
-    "resolve": 8,
-    "team_result": 12,
-    "payout": 8,
+    "resolve": 4,
+    "team_result": 6,
+    "payout": 5,
 }

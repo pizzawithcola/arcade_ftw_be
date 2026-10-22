@@ -57,7 +57,16 @@ ROUND_FLOW: list[dict] = [
         "seconds_each": 20,
         "score": "data",
     },
-    {"type": "game", "game": "sabotage", "title": "Sabotage", "duration_sec": 30, "score": "sabotage"},
+    {
+        "type": "game",
+        "game": "sabotage",
+        "title": "Sabotage",
+        # The Sabotage engine runs its own clock (~2.5 minutes plus tie-break
+        # headroom) and broadcasts it over WS; this node only holds the slot
+        # in the main flow for as long as the game needs.
+        "duration_sec": 170,
+        "score": "sabotage",
+    },
     {
         "type": "quiz",
         "title": "Ultimate Quiz",

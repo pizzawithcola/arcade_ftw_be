@@ -14,6 +14,7 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 from app.manager import manager
 from app.rooms import DEFAULT_ROOM, rooms
+from app.sabotage import sabotages
 
 router = APIRouter(tags=["ws"])
 
@@ -32,6 +33,11 @@ async def ws_endpoint(websocket: WebSocket) -> None:
     await manager.connect(websocket, code)
     try:
         await websocket.send_json({"type": "state", "payload": engine.snapshot()})
+        # A room mid-Sabotage should land a reconnecting screen straight into
+        # the game, not wait for the next phase change to hear about it.
+        sabotage = sabotages.get(code)
+        if sabotage is not None:
+            await websocket.send_json({"type": "sabotage", "payload": sabotage.snapshot()})
         while True:
             # Nothing a client sends changes the show, but receiving is what
             # keeps this loop parked until the connection actually drops.

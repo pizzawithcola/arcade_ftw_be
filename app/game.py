@@ -24,6 +24,7 @@ from app.auth import Claims, require_admin, require_display
 from app.database import get_session
 from app.engine import Engine, Phase
 from app.events import EVENT_KEYS
+from app.manager import manager
 from app.models import Player, Room
 from app.rooms import rooms
 from app.sabotage import sabotages
@@ -258,6 +259,13 @@ async def start(code: str) -> dict:
 async def pause(code: str) -> dict:
     engine = _engine(code)
     await engine.pause()
+    # One operator action stops every clock in the room, including Sabotage's
+    # per-phase timer. Broadcast the frozen sabotage state too, so screens show
+    # it the same instant the main clock freezes.
+    sabotage = sabotages.get(code)
+    if sabotage is not None:
+        sabotage.pause()
+        await manager.broadcast_to(code, {"type": "sabotage", "payload": sabotage.snapshot()})
     return engine.snapshot()
 
 
@@ -267,6 +275,10 @@ async def pause(code: str) -> dict:
 async def resume(code: str) -> dict:
     engine = _engine(code)
     await engine.resume()
+    sabotage = sabotages.get(code)
+    if sabotage is not None:
+        sabotage.resume()
+        await manager.broadcast_to(code, {"type": "sabotage", "payload": sabotage.snapshot()})
     return engine.snapshot()
 
 

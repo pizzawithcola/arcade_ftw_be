@@ -62,6 +62,13 @@ class SabotageEngine:
     _runner: asyncio.Task | None = None
     _wake: asyncio.Event | None = None
     _listeners: list[Callable[[], Awaitable[None]]] = field(default_factory=list)
+    # Pause freezes the current phase's remaining time, exactly like the main
+    # engine, so one operator action stops both clocks together.
+    paused: bool = False
+    _remaining: float = 0.0
+    # Whether the room broadcast is already wired, so a re-start does not add
+    # duplicate listeners.
+    _wired: bool = False
 
     # ─── observers ───────────────────────────────────────────────────────────
     def subscribe(self, listener: Callable[[], Awaitable[None]]) -> None:
@@ -157,6 +164,8 @@ class SabotageEngine:
 
     def cast_vote(self, player_id: int, card_id: str) -> str:
         """Record one player's current choice. The last valid one wins."""
+        if self.paused:
+            raise SabotageError("show is paused")
         team = self._voting_team()
         if not team:
             raise SabotageError(f"no vote is open in phase {self.phase}")
@@ -310,14 +319,18 @@ class SabotageEngine:
 
     def snapshot(self) -> dict:
         """Everything the screens need to render the current moment."""
-        remaining = 0.0
-        if self._deadline is not None:
+        if self.paused:
+            remaining = max(0.0, self._remaining)
+        elif self._deadline is not None:
             remaining = max(0.0, self._deadline - time.monotonic())
+        else:
+            remaining = 0.0
 
         scenario = self._scenario() if self.round <= len(cfg.SCENARIOS) else None
         return {
             "code": self.code,
             "phase": self.phase,
+            "paused": self.paused,
             "round": self.round,
             "attacker": scenario["attacker"] if scenario else None,
             "defender": scenario["defender"] if scenario else None,
@@ -352,6 +365,11 @@ class SabotageEngine:
     async def _run(self) -> None:
         try:
             while self.phase != "done":
+                if self.paused:
+                    assert self._wake is not None
+                    await self._wake.wait()
+                    self._wake.clear()
+                    continue
                 if self._deadline is None:
                     self._deadline = time.monotonic() + cfg.TIMINGS.get(self.phase, 5)
                 timeout = max(0.0, self._deadline - time.monotonic())
@@ -378,6 +396,27 @@ class SabotageEngine:
         assert self._wake is not None
         self._wake.set()
         await self._notify()
+
+    # ─── pause / resume, mirroring the main engine ───────────────────────────
+    def pause(self) -> None:
+        """Freeze the current phase's remaining time."""
+        if self.paused or self.phase in ("setup", "done"):
+            return
+        if self._deadline is not None:
+            self._remaining = max(0.0, self._deadline - time.monotonic())
+            self._deadline = None
+        self.paused = True
+        if self._wake is not None:
+            self._wake.set()
+
+    def resume(self) -> None:
+        if not self.paused:
+            return
+        self.paused = False
+        if self.phase not in ("setup", "done"):
+            self._deadline = time.monotonic() + (self._remaining or cfg.TIMINGS.get(self.phase, 5))
+        if self._wake is not None:
+            self._wake.set()
 
 
 class SabotageRegistry:
@@ -413,6 +452,7 @@ from sqlalchemy.ext.asyncio import AsyncSession  # noqa: E402
 
 from app.auth import Claims, require_admin, require_player  # noqa: E402
 from app.database import get_session  # noqa: E402
+from app.manager import manager  # noqa: E402
 from app.models import Player  # noqa: E402
 
 router = APIRouter(prefix="/sabotage", tags=["sabotage"])
@@ -449,6 +489,18 @@ async def start_sabotage(code: str, session: AsyncSession = Depends(get_session)
 
     engine = sabotages.ensure(code)
     engine.teams = teams
+
+    # Wire the room broadcast once: every phase change fans out to the room's
+    # websockets as a `sabotage` message, alongside the show's `state`.
+    if not engine._wired:
+        async def broadcast_sabotage() -> None:
+            await manager.broadcast_to(
+                code, {"type": "sabotage", "payload": engine.snapshot()}
+            )
+
+        engine.subscribe(broadcast_sabotage)
+        engine._wired = True
+
     try:
         engine.start()
     except SabotageError as exc:

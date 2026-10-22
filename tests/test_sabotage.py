@@ -305,3 +305,63 @@ async def test_vote_requires_a_player_token(client: AsyncClient, admin_headers: 
     )
     assert response.status_code == 401
     sabotages.remove("sab-auth")
+
+
+# ─── pause / resume, mirroring the main engine ───────────────────────────────
+def test_pause_freezes_the_clock_and_resume_restores_it() -> None:
+    engine = make_engine()
+    engine.start()
+    assert engine.phase == "team_reveal"
+
+    engine.pause()
+    assert engine.paused is True
+    assert engine._deadline is None
+    assert engine._remaining > 0
+    assert engine.snapshot()["paused"] is True
+    assert engine.snapshot()["remaining_ms"] > 0
+
+    engine.resume()
+    assert engine.paused is False
+    assert engine._deadline is not None
+
+
+def test_a_paused_show_refuses_votes() -> None:
+    engine = make_engine()
+    engine.start()
+    engine.advance()  # -> attack (red)
+    engine.pause()
+    with pytest.raises(SabotageError):
+        engine.cast_vote(1, "deepfake_video")
+
+
+async def test_pausing_the_room_pauses_sabotage(
+    client: AsyncClient, admin_headers: dict
+) -> None:
+    from app.rooms import rooms
+
+    await client.post("/api/rooms", json={"code": "sab-pause"}, headers=admin_headers)
+    for name in ("One", "Two", "Three", "Four"):
+        headers, _ = await _login(client, name)
+        await client.post("/api/rooms/sab-pause/join", headers=headers)
+    await client.post("/api/rooms/sab-pause/teams/assign", headers=admin_headers)
+
+    started = await client.post("/api/sabotage/sab-pause/start", headers=admin_headers)
+    assert started.status_code == 200
+
+    # Drive the show into playing and pause it; Sabotage must freeze with it.
+    await client.post("/api/rooms/sab-pause/start", headers=admin_headers)
+    paused = await client.post("/api/rooms/sab-pause/pause", headers=admin_headers)
+    assert paused.status_code == 200
+
+    state = await client.get("/api/sabotage/sab-pause/state")
+    assert state.json()["paused"] is True
+
+    resumed = await client.post("/api/rooms/sab-pause/resume", headers=admin_headers)
+    assert resumed.status_code == 200
+    state = await client.get("/api/sabotage/sab-pause/state")
+    assert state.json()["paused"] is False
+
+    engine = rooms.get("sab-pause")
+    if engine is not None:
+        await engine.finish()
+    sabotages.remove("sab-pause")
