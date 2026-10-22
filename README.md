@@ -217,7 +217,7 @@ pytest
 >
 > ⚠️ `pytest` 的集成测试会 **DROP SCHEMA** 再跑迁移，**绝不能指向真实库**。
 
-> 基础镜像用 `public.ecr.aws/docker/library/python:3.12-slim` 而非 Docker Hub：避开 Docker Hub 匿名拉取限流（会让 CI 随机失败）。
+> 基础镜像已镜像到自己的 ECR `arcade-ftw-backend:python-base-3.12-slim`（`public.ecr.aws` 会随机 429 限流，CI 曾连挂 3 次）。Dockerfile 顶部注释有刷新命令；注意 `--platform linux/amd64`。
 > 需要 `actionlint` / `hadolint`：`brew install actionlint hadolint`。
 
 ## 注意事项
