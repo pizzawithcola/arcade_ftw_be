@@ -6,7 +6,7 @@ from fastapi import APIRouter, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
 
-from app import auth, game, players, roster
+from app import auth, game, players, roster, scores
 from app.config import cors_origin_list, settings
 from app.database import engine as db_engine
 from app.rooms import rooms
@@ -52,6 +52,7 @@ api.include_router(auth.router)
 api.include_router(game.router)
 api.include_router(roster.router)
 api.include_router(players.router)
+api.include_router(scores.router)
 api.include_router(ws_router)
 app.include_router(api)
 

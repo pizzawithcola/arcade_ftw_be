@@ -31,6 +31,16 @@ _SCORE_LIMIT = 100_000
 
 SCORE_FIELDS = ("hallucination_score", "data_score", "sabotage_score", "ultimate_score")
 
+# A flow node names its section; four sections map to the four columns. The
+# game and the quiz that follows it share a section, so a round is scored as a
+# whole rather than as one column per node.
+SECTION_FIELDS = {
+    "hallucination": "hallucination_score",
+    "data": "data_score",
+    "sabotage": "sabotage_score",
+    "ultimate": "ultimate_score",
+}
+
 
 class PlayerPatch(BaseModel):
     nickname: str | None = Field(default=None, min_length=1, max_length=64)
@@ -63,7 +73,7 @@ async def _player_or_404(player_id: int, session: AsyncSession) -> Player:
     return player
 
 
-def _score_body(player_id: int, score: Score | None) -> dict | None:
+def score_body(player_id: int, score: Score | None) -> dict | None:
     if score is None:
         return None
     return {
@@ -82,7 +92,7 @@ def _player_body(player: Player, score: Score | None) -> dict:
         "room_code": player.room_code,
         "created_at": player.created_at,
         "total_score": score.total_score if score is not None else 0,
-        "score": _score_body(player.id, score),
+        "score": score_body(player.id, score),
     }
 
 
@@ -187,7 +197,7 @@ async def set_score(
     await session.commit()
     # Refresh to read back the recomputed generated column.
     await session.refresh(score)
-    return _score_body(player_id, score)
+    return score_body(player_id, score)
 
 
 @router.post("/{player_id}/score/adjust", summary="Add points to score components")
@@ -211,4 +221,4 @@ async def adjust_score(
             setattr(score, field, (getattr(score, field) or 0) + delta)
     await session.commit()
     await session.refresh(score)
-    return _score_body(player_id, score)
+    return score_body(player_id, score)

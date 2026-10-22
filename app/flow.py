@@ -24,6 +24,11 @@ inside each device.
 """
 
 # Intro - Hallucination - Quiz - Data Shadow - Quiz - Sabotage - Ultimate Quiz - Wrap up
+#
+# Scoring nodes name the partition their points belong to (`score`). A game and
+# the quiz that follows it share one partition, so the round is scored as one
+# section rather than as five separate columns. The server maps this key to a
+# `scores` column; clients never name the column themselves.
 ROUND_FLOW: list[dict] = [
     {"type": "intro", "title": "Welcome", "duration_sec": 10},
     {
@@ -33,11 +38,33 @@ ROUND_FLOW: list[dict] = [
         "duration_sec": 66,
         "questions": 2,
         "seconds_each": 30,
+        "score": "hallucination",
     },
-    {"type": "quiz", "title": "Quiz round 1", "duration_sec": 46, "questions": 2, "seconds_each": 20},
-    {"type": "game", "game": "data_shadow", "title": "Data Shadow", "duration_sec": 51},
-    {"type": "quiz", "title": "Quiz round 2", "duration_sec": 46, "questions": 2, "seconds_each": 20},
-    {"type": "game", "game": "sabotage", "title": "Sabotage", "duration_sec": 30},
-    {"type": "quiz", "title": "Ultimate Quiz", "duration_sec": 46, "questions": 2, "seconds_each": 20},
+    {
+        "type": "quiz",
+        "title": "Quiz round 1",
+        "duration_sec": 46,
+        "questions": 2,
+        "seconds_each": 20,
+        "score": "hallucination",
+    },
+    {"type": "game", "game": "data_shadow", "title": "Data Shadow", "duration_sec": 51, "score": "data"},
+    {
+        "type": "quiz",
+        "title": "Quiz round 2",
+        "duration_sec": 46,
+        "questions": 2,
+        "seconds_each": 20,
+        "score": "data",
+    },
+    {"type": "game", "game": "sabotage", "title": "Sabotage", "duration_sec": 30, "score": "sabotage"},
+    {
+        "type": "quiz",
+        "title": "Ultimate Quiz",
+        "duration_sec": 46,
+        "questions": 2,
+        "seconds_each": 20,
+        "score": "ultimate",
+    },
     {"type": "outro", "title": "Wrap up", "duration_sec": 10},
 ]

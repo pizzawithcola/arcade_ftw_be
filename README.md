@@ -17,13 +17,14 @@ app/
 ├── main.py            # FastAPI 入口（CORS + /health + /health/db + /api 路由）
 ├── config.py          # pydantic-settings 环境变量；database_url 由 DB_* 拼装
 ├── database.py        # async engine + session factory
-├── models.py          # rooms / players / scores（宽表 + 生成列 total_score）
+├── models.py          # rooms / players / scores / score_events（宽表 + 生成列 total_score）
 ├── migrations/        # Alembic（env.py 从环境变量取 DSN）
 ├── engine.py          # 状态机：idle / playing / paused / finished + index
 ├── flow.py            # 主线流程配置（改流程不改代码）
 ├── rooms.py           # RoomRegistry：每房间一个内存引擎，启动时从库里读房间
 ├── roster.py          # 房间成员：加入房间、房间名单（玩家只看到名字）
 ├── players.py         # 管理员用的玩家 / 分数接口（改分、删人级联删分）
+├── scores.py          # 玩家上报得分：按题幂等，写哪个分项由流程节点决定
 ├── ws.py              # WebSocket 端点：连接即推快照，之后同房间扇出
 └── question_types/    # 题型注册表（插件化）
     ├── base.py        # 题型协议
@@ -83,7 +84,8 @@ pytest                        # 集成测试：迁移 + 读写往返
 | `PATCH /api/players/{id}` | **管理员（full）** | 改昵称 / 活动 / 所属房间；`room_code: null` 表示移出房间，省略表示不动 |
 | `DELETE /api/players/{id}` | **管理员（full）** | 删玩家，**分数由外键级联一起删** |
 | `PUT /api/players/{id}/score` | **管理员（full）** | 设置分项（未给的分项保持不变），首次写入自动建行 |
-| `POST /api/players/{id}/score/adjust` | **管理员（full）** | 按增量加/减分（游戏上报「+20」用这个）|
+| `POST /api/players/{id}/score/adjust` | **管理员（full）** | 按增量加/减分（运营纠错用）|
+| `POST /api/me/score` | **玩家** | 上报自己在一题 / 整个节点上得的分数；写哪个分项由节点的 `score` 决定，按 `room:node:question` 幂等 |
 | `WS /api/ws?room={code}` | — | 只收推送：连上先推该房间当前状态，之后只扇出给**同房间**的连接 |
 
 管理员控制走 **HTTP 而不是 WS**：可鉴权、能在 `/api/docs` 里直接点、失败返回真实状态码；状态变化再由 WS 广播给所有人。
@@ -114,11 +116,13 @@ pytest                        # 集成测试：迁移 + 读写往返
 ## 数据库
 
 - **schema 只由 Alembic 迁移创建**，应用启动不建表。新增改动：`alembic revision --autogenerate -m "..."` → 检查生成的脚本 → `alembic upgrade head`。
-- 三张表：`rooms(code PK, event, label, created_at)`、`players(..., room_code → rooms.code ON DELETE SET NULL)`、`scores(player_id PK, 四个分项 + 生成列 total_score)`。
+- 四张表：`rooms(code PK, event, label, created_at)`、`players(..., room_code → rooms.code ON DELETE SET NULL)`、`scores(player_id PK, 四个分项 + 生成列 total_score)`、`score_events(player_id + event_key PK, points)`（上报幂等记录）。
 - 计分是**宽表**（四个游戏各一列 + 数据库生成列 `total_score`），不是长表——被问的查询是「按 total 排名」。加第五个游戏需要一次迁移。
 - **房间是数据**：`rooms` 表是房间的真相来源，`alembic` 迁移里 seed 了 `main`。启动时 `rooms.load()` 读库建引擎；**读库失败只警告并退回默认房间**，否则 DB 抖动会让任务启动失败、被 ALB 反复重启，把内存里的节目全清掉。
 - `players.room_code` 可空：登录就建行，**进房间**才写归属（`POST /api/rooms/{code}/join`）。删房间只会把成员置空，不会删人。
 - `scores` 属于玩家（`ON DELETE CASCADE`）：**删玩家就删分**，不需要应用层清理，也不会有分数挂在已删的人上。`total_score` 是生成列，接口**只接受四个分项**——直接写 total 会被 pydantic 忽略，库里也会拒。
+- **四个分项 = 四个分区**（`hallucination + quiz1`、`data + quiz2`、`sabotage`、`ultimate`），节点在 `flow.py` 用 `score` 声明归属。
+- `score_events` 是分数上报的幂等键：`(player_id, event_key)` 冲突时插入无效，只有真正插入的那条才累加分数。
 - `/health` **刻意不碰数据库**（ALB 用它探活，DB 抖动不该重启任务、清空内存房间）；数据库状态看 `/health/db`。
 - 测试会**先 DROP SCHEMA 再用迁移重建**，所以绝不能指向真实库——请只对 `docker-compose` 起的本地库运行 `pytest`。
 

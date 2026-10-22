@@ -64,12 +64,36 @@ class Room(Base):
     players: Mapped[list[Player]] = relationship(back_populates="room")
 
 
+class ScoreEvent(Base):
+    """One reported scoring event, deduplicated by its key.
+
+    Reporting is at-least-once on purpose: a kiosk retries, a page reloads, and
+    an operator can jump back to a node. The same answer therefore arrives more
+    than once, and the composite primary key makes every repeat a no-op instead
+    of double points.
+    """
+
+    __tablename__ = "score_events"
+
+    player_id: Mapped[int] = mapped_column(
+        ForeignKey("players.id", ondelete="CASCADE"), primary_key=True
+    )
+    # "<room>:<node index>:<question index|total>" - built by the server, never
+    # taken from the client, so a client cannot forge a fresh key and re-score.
+    event_key: Mapped[str] = mapped_column(String(80), primary_key=True)
+    points: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
 class Score(Base):
-    """One row per player: the four games plus their total.
+    """One row per player: the four sections plus their total.
 
     A wide row rather than one row per stage. The show is a fixed set of four
-    games and the questions asked of this table are leaderboards ordered by
-    total, so the trade is deliberate: adding a fifth game means a migration.
+    sections (a game plus the quiz that follows it) and the questions asked of
+    this table are leaderboards ordered by total, so the trade is deliberate:
+    adding a fifth section means a migration.
 
     `total_score` is a database-generated column, so it can never drift from the
     four parts no matter which code path writes them.
