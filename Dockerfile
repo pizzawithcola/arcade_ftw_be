@@ -1,11 +1,12 @@
 # The base image is mirrored into our own ECR because public.ecr.aws and
 # Docker Hub both apply anonymous pull limits that randomly fail CI builds.
-# Refresh the mirror with:
+# It lives in the backend repository (which the deploy role can already pull)
+# under a `python-base-*` tag. Refresh the mirror with:
 #   docker pull public.ecr.aws/docker/library/python:3.12-slim
 #   docker tag  public.ecr.aws/docker/library/python:3.12-slim \
-#      866730904414.dkr.ecr.ap-south-1.amazonaws.com/arcade-ftw-python-base:3.12-slim
-#   docker push 866730904414.dkr.ecr.ap-south-1.amazonaws.com/arcade-ftw-python-base:3.12-slim
-FROM 866730904414.dkr.ecr.ap-south-1.amazonaws.com/arcade-ftw-python-base:3.12-slim
+#      866730904414.dkr.ecr.ap-south-1.amazonaws.com/arcade-ftw-backend:python-base-3.12-slim
+#   docker push 866730904414.dkr.ecr.ap-south-1.amazonaws.com/arcade-ftw-backend:python-base-3.12-slim
+FROM 866730904414.dkr.ecr.ap-south-1.amazonaws.com/arcade-ftw-backend:python-base-3.12-slim
 
 WORKDIR /app
 
