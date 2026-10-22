@@ -314,4 +314,5 @@ async def me(
             body["player_id"] = player.id
             body["nickname"] = player.nickname
             body["event"] = player.event
+            body["team"] = player.team
     return body

@@ -34,6 +34,10 @@ class Player(Base):
     room_code: Mapped[str | None] = mapped_column(
         ForeignKey("rooms.code", ondelete="SET NULL"), index=True
     )
+    # Which Sabotage team they are on in that room: "red" or "blue". Nullable
+    # until the host assigns teams, and cleared when the player joins a
+    # different room - a team is a property of the round, not of the person.
+    team: Mapped[str | None] = mapped_column(String(8))
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )

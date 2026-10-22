@@ -22,7 +22,7 @@ app/
 ├── engine.py          # 状态机：idle / playing / paused / finished + index
 ├── flow.py            # 主线流程配置（改流程不改代码）
 ├── rooms.py           # RoomRegistry：每房间一个内存引擎，启动时从库里读房间
-├── roster.py          # 房间成员：加入房间、房间名单（玩家只看到名字）
+├── roster.py          # 房间成员：加入房间、房间名单、红蓝团队分配（玩家只看到名字）
 ├── players.py         # 管理员用的玩家 / 分数接口（改分、删人级联删分）
 ├── scores.py          # 玩家上报得分：按题幂等，写哪个分项由流程节点决定
 ├── ws.py              # WebSocket 端点：连接即推快照，之后同房间扇出
@@ -73,7 +73,8 @@ pytest                        # 集成测试：迁移 + 读写往返
 | `POST /api/rooms/{code}/go/{index}` | **管理员（full）** | 跳到任意节点（也是从 `finished` / `idle` 复活的方式）|
 | `POST /api/rooms/{code}/reset` | **管理员（full）** | 回到 `idle` 未开演态、第 1 节点、时钟停止（排练后交台）|
 | `POST /api/rooms/{code}/join` | **玩家** | 把当前玩家记入该房间（每次进页面都调，重连后仍在原房间）|
-| `GET /api/rooms/{code}/players` | **已登录** | 房间名单，按总分倒序。admin/display 得到 `player_id/event/total_score`，玩家**只得到昵称**（等待室用）|
+| `GET /api/rooms/{code}/players` | **已登录** | 房间名单，按总分倒序。admin/display 得到 `player_id/event/team/total_score`，玩家**只得到昵称**（等待室用）|
+| `POST /api/rooms/{code}/teams/assign` | **管理员（full）** | Sabotage 分队：按 id 交替均分红蓝，可重跑（幂等、确定性）；join 进新房间会清掉旧 team |
 | `GET /api/rooms/current` | — | 当前轮的 `{code, phase}`；**玩家端靠它跟随当前轮**（只暴露这两个字段）|
 | `POST /api/rooms` | **管理员（full）** | 开新一轮：code 可省略（自动 `round-N`），写库并**立刻建引擎**（否则刚拿到的房间码打开是 404）|
 | `GET /api/rooms/{code}` | **display** | 单个房间的元信息 + 状态 |
@@ -116,7 +117,7 @@ pytest                        # 集成测试：迁移 + 读写往返
 ## 数据库
 
 - **schema 只由 Alembic 迁移创建**，应用启动不建表。新增改动：`alembic revision --autogenerate -m "..."` → 检查生成的脚本 → `alembic upgrade head`。
-- 四张表：`rooms(code PK, event, label, created_at)`、`players(..., room_code → rooms.code ON DELETE SET NULL)`、`scores(player_id PK, 四个分项 + 生成列 total_score)`、`score_events(player_id + event_key PK, points)`（上报幂等记录）。
+- 四张表：`rooms(code PK, event, label, created_at)`、`players(..., room_code → rooms.code ON DELETE SET NULL, team red/blue 可空)`、`scores(player_id PK, 四个分项 + 生成列 total_score)`、`score_events(player_id + event_key PK, points)`（上报幂等记录）。
 - 计分是**宽表**（四个游戏各一列 + 数据库生成列 `total_score`），不是长表——被问的查询是「按 total 排名」。加第五个游戏需要一次迁移。
 - **房间是数据**：`rooms` 表是房间的真相来源，`alembic` 迁移里 seed 了 `main`。启动时 `rooms.load()` 读库建引擎；**读库失败只警告并退回默认房间**，否则 DB 抖动会让任务启动失败、被 ALB 反复重启，把内存里的节目全清掉。
 - `players.room_code` 可空：登录就建行，**进房间**才写归属（`POST /api/rooms/{code}/join`）。删房间只会把成员置空，不会删人。

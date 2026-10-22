@@ -58,6 +58,9 @@ async def join(
         raise HTTPException(status_code=404, detail=f"unknown room: {code}")
 
     player.room_code = code
+    # A team belongs to the round: entering a room starts them unassigned and
+    # the host's assign call gives them a side.
+    player.team = None
     await session.commit()
     return {
         "room": code,
@@ -134,6 +137,7 @@ async def players(
                 Player.id,
                 Player.nickname,
                 Player.event,
+                Player.team,
                 func.coalesce(Score.total_score, 0).label("total_score"),
             )
             .outerjoin(Score, Score.player_id == Player.id)
@@ -156,8 +160,45 @@ async def players(
                 "player_id": row.id,
                 "nickname": row.nickname,
                 "event": row.event,
+                "team": row.team,
                 "total_score": row.total_score,
             }
             for row in rows
         ],
+    }
+
+
+@router.post(
+    "/{code}/teams/assign",
+    summary="Split the room's players into Red and Blue",
+    dependencies=[Depends(require_admin)],
+)
+async def assign_teams(code: str, session: AsyncSession = Depends(get_session)) -> dict:
+    """Assign every player in the room a side, as evenly as possible.
+
+    Idempotent and deterministic: calling it again re-splits the same room, and
+    a replayed round lands the same players on the same side because players
+    are ordered by id before alternating. The team is a property of the player
+    in this round, so it is cleared on join and only exists while assigned.
+    """
+    _known_room(code)
+    rows = (
+        await session.execute(
+            select(Player).where(Player.room_code == code).order_by(Player.id)
+        )
+    ).scalars().all()
+
+    red: list[dict] = []
+    blue: list[dict] = []
+    for index, player in enumerate(rows):
+        player.team = "red" if index % 2 == 0 else "blue"
+        target = red if player.team == "red" else blue
+        target.append({"player_id": player.id, "nickname": player.nickname})
+
+    await session.commit()
+    return {
+        "room": code,
+        "count": len(rows),
+        "red": red,
+        "blue": blue,
     }
