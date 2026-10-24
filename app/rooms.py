@@ -6,7 +6,7 @@ would have to change the day a second event runs in parallel - and that day is
 always the day of the event.
 
 Engines stay in memory, one per room. A restart therefore resets every show to
-IDLE; that is the same constraint the single-room version already had.
+WAITING; that is the same constraint the single-room version already had.
 """
 
 from __future__ import annotations

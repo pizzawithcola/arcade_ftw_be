@@ -166,7 +166,7 @@ async def current_room(session: AsyncSession = Depends(get_session)) -> dict:
     engine = rooms.get(room.code)
     return {
         "code": room.code,
-        "phase": engine.snapshot()["phase"] if engine is not None else "idle",
+        "phase": engine.snapshot()["phase"] if engine is not None else "waiting",
     }
 
 

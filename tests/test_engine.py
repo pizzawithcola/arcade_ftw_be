@@ -160,7 +160,7 @@ async def test_reset_returns_to_an_unstarted_show() -> None:
 
     await engine.reset()
 
-    assert engine.phase is Phase.IDLE
+    assert engine.phase is Phase.WAITING
     assert engine.index == 0
     assert engine.snapshot()["remaining_ms"] == 0
     # The clock task must be gone, not merely idle: a runner left alive would
@@ -169,14 +169,14 @@ async def test_reset_returns_to_an_unstarted_show() -> None:
 
     # And nothing may advance on its own from here.
     await asyncio.sleep(0.4)
-    assert engine.phase is Phase.IDLE
+    assert engine.phase is Phase.WAITING
     assert engine.index == 0
 
 
 async def test_reset_works_from_every_phase() -> None:
-    for prepared in ("idle", "playing", "paused", "finished"):
+    for prepared in ("waiting", "playing", "paused", "finished"):
         engine = make_engine([0.5, 0.5])
-        if prepared != "idle":
+        if prepared != "waiting":
             await engine.start()
         if prepared == "paused":
             await engine.pause()
@@ -185,7 +185,7 @@ async def test_reset_works_from_every_phase() -> None:
 
         await engine.reset()
 
-        assert engine.phase is Phase.IDLE, prepared
+        assert engine.phase is Phase.WAITING, prepared
         assert engine.index == 0, prepared
         assert engine.snapshot()["remaining_ms"] == 0, prepared
         assert engine._runner is None, prepared

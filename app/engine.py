@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 
 
 class Phase(str, Enum):
-    IDLE = "idle"
+    WAITING = "waiting"
     PLAYING = "playing"
     PAUSED = "paused"
     FINISHED = "finished"
@@ -39,7 +39,7 @@ Listener = Callable[[], Awaitable[None]]
 @dataclass
 class Engine:
     flow: list[dict] = field(default_factory=lambda: [dict(node) for node in ROUND_FLOW])
-    phase: Phase = Phase.IDLE
+    phase: Phase = Phase.WAITING
     index: int = 0
 
     # Monotonic instant the current node ends at. None while idle, paused or
@@ -156,14 +156,14 @@ class Engine:
     async def reset(self) -> None:
         """Back to a pristine show: first node, nothing on the clock.
 
-        IDLE is unreachable once the show has started, which left no way to
+        WAITING is unreachable once the show has started, which left no way to
         rehearse through to the end and then hand the console over ready to run
         from the top. Stopping the runner matters as much as the fields do: a
         live runner would sit on the wake event with nothing to wake it.
         """
         await self._stop_runner()
         self.index = 0
-        self.phase = Phase.IDLE
+        self.phase = Phase.WAITING
         self._deadline = None
         self._remaining = 0.0
         await self._notify()
@@ -208,13 +208,13 @@ class Engine:
         await self._notify()
 
     async def go_to(self, index: int) -> None:
-        """Jump to any node. Also the way out of FINISHED and IDLE."""
+        """Jump to any node. Also the way out of FINISHED and WAITING."""
         if not 0 <= index < self.node_count:
             raise ValueError(f"node index {index} out of range")
-        was_idle = self.phase in (Phase.IDLE, Phase.FINISHED)
+        was_waiting = self.phase in (Phase.WAITING, Phase.FINISHED)
         self.index = index
         self._deadline = None
-        if was_idle:
+        if was_waiting:
             self.phase = Phase.PLAYING
             self._ensure_runner()
         if self.phase is Phase.PLAYING:

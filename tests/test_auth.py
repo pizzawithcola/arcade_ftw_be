@@ -193,7 +193,7 @@ async def test_an_admin_can_reset_the_show(client: AsyncClient, admin_headers: d
     reset = await client.post(f"/api/rooms/{DEFAULT_ROOM}/reset", headers=admin_headers)
     assert reset.status_code == 200
     body = reset.json()
-    assert body["phase"] == Phase.IDLE.value
+    assert body["phase"] == Phase.WAITING.value
     assert body["index"] == 0
     assert body["remaining_ms"] == 0
 

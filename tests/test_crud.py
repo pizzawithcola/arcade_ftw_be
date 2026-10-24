@@ -50,7 +50,7 @@ async def test_a_new_room_is_playable_immediately(
     )
     assert created.status_code == 201
     assert created.json()["code"] == "crud-alpha"
-    assert created.json()["state"]["phase"] == "idle"
+    assert created.json()["state"]["phase"] == "waiting"
 
     state = await client.get("/api/rooms/crud-alpha/state")
     assert state.status_code == 200
@@ -76,7 +76,7 @@ async def test_players_can_ask_which_room_is_current(client: AsyncClient, admin_
     found = await client.get("/api/rooms/current")
     assert found.status_code == 200
     assert found.json()["code"] == newest
-    assert found.json()["phase"] == "idle"
+    assert found.json()["phase"] == "waiting"
 
 
 async def test_the_newest_room_is_the_current_one(
@@ -154,7 +154,7 @@ async def test_a_room_detail_is_for_signed_in_screens(
     assert (await client.get("/api/rooms/crud-detail")).status_code == 401
     shown = await client.get("/api/rooms/crud-detail", headers=display_headers)
     assert shown.status_code == 200
-    assert shown.json()["state"]["phase"] == "idle"
+    assert shown.json()["state"]["phase"] == "waiting"
     assert (await client.get("/api/rooms/crud-missing", headers=display_headers)).status_code == 404
 
 
