@@ -89,19 +89,17 @@ async def test_the_newest_room_is_the_current_one(
     assert listed.json()["rooms"][0]["code"] == newest
 
 
-async def test_the_room_list_carries_the_row_metadata(
+async def test_the_room_list_carries_the_lifecycle_metadata(
     client: AsyncClient, admin_headers: dict, display_headers: dict
 ) -> None:
-    """The operator's room table shows label and event, so the list needs them."""
-    await client.post(
-        "/api/rooms",
-        json={"code": "crud-meta", "label": "Metadata room", "event": "sg_fintech_week"},
-        headers=admin_headers,
-    )
+    """A room is just its code, creation time and open/closed state."""
+    await client.post("/api/rooms", json={"code": "crud-meta"}, headers=admin_headers)
     listed = await client.get("/api/rooms", headers=display_headers)
     entry = next(r for r in listed.json()["rooms"] if r["code"] == "crud-meta")
-    assert entry["label"] == "Metadata room"
-    assert entry["event"] == "sg_fintech_week"
+    assert entry["created_at"] is not None
+    assert entry["closed_at"] is None
+    assert "label" not in entry
+    assert "event" not in entry
 
 
 async def test_a_duplicate_room_code_is_refused(
@@ -128,23 +126,13 @@ async def test_creating_a_room_needs_a_full_admin(client: AsyncClient) -> None:
     ).status_code == 401
 
 
-async def test_a_room_can_be_relabelled(client: AsyncClient, admin_headers: dict) -> None:
-    await client.post(
-        "/api/rooms", json={"code": "crud-label", "label": "Before"}, headers=admin_headers
-    )
+async def test_a_room_cannot_be_edited(client: AsyncClient, admin_headers: dict) -> None:
+    """Rooms are one-shot: there is nothing to rename, so editing is gone."""
+    await client.post("/api/rooms", json={"code": "crud-fixed"}, headers=admin_headers)
     patched = await client.patch(
-        "/api/rooms/crud-label",
-        json={"label": "After", "event": "hk_fintech_week"},
-        headers=admin_headers,
+        "/api/rooms/crud-fixed", json={"label": "After"}, headers=admin_headers
     )
-    assert patched.status_code == 200
-    assert patched.json()["label"] == "After"
-    assert patched.json()["event"] == "hk_fintech_week"
-
-    unknown_event = await client.patch(
-        "/api/rooms/crud-label", json={"event": "not_an_event"}, headers=admin_headers
-    )
-    assert unknown_event.status_code == 422
+    assert patched.status_code == 405
 
 
 async def test_a_room_detail_is_for_signed_in_screens(

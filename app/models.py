@@ -49,10 +49,12 @@ class Player(Base):
 
 
 class Room(Base):
-    """A single running show.
+    """One round of the show.
 
     The engine behind a room lives in memory, but the room itself is a row so
     that membership survives a restart and the admin panel can list what exists.
+    A room is one-shot: finishing it sets `closed_at`, and the next round is a
+    brand new room.
     """
 
     __tablename__ = "rooms"
@@ -60,12 +62,39 @@ class Room(Base):
     code: Mapped[str] = mapped_column(String(32), primary_key=True)
     # Optional: a room can serve any event, so this is a label rather than a key.
     event: Mapped[str | None] = mapped_column(String(32))
-    label: Mapped[str | None] = mapped_column(String(80))
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
+    # Set when the room is finished: a closed room is history, not playable.
+    closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     players: Mapped[list[Player]] = relationship(back_populates="room")
+    participants: Mapped[list["RoomParticipant"]] = relationship(
+        back_populates="room", cascade="all, delete-orphan"
+    )
+
+
+class RoomParticipant(Base):
+    """Who joined a room, kept even after the room closes.
+
+    `players.room_code` is the player's *current* room and is cleared on finish;
+    this table is the historical record of every round a player joined. One row
+    per (room, player), written idempotently on join.
+    """
+
+    __tablename__ = "room_participants"
+
+    room_code: Mapped[str] = mapped_column(
+        ForeignKey("rooms.code", ondelete="CASCADE"), primary_key=True
+    )
+    player_id: Mapped[int] = mapped_column(
+        ForeignKey("players.id", ondelete="CASCADE"), primary_key=True
+    )
+    joined_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    room: Mapped[Room] = relationship(back_populates="participants")
 
 
 class ScoreEvent(Base):

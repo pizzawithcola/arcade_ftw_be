@@ -14,6 +14,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth import (
@@ -26,7 +27,7 @@ from app.auth import (
 )
 from app.database import get_session
 from app.events import EVENT_KEYS
-from app.models import Player, Room, Score
+from app.models import Player, Room, RoomParticipant, Score
 from app.rooms import rooms
 
 router = APIRouter(prefix="/rooms", tags=["rooms"])
@@ -61,6 +62,13 @@ async def join(
     # A team belongs to the round: entering a room starts them unassigned and
     # the host's assign call gives them a side.
     player.team = None
+    # Record the participation for the room's history. Idempotent: a reconnect
+    # re-joins the same room and must not double-count.
+    await session.execute(
+        pg_insert(RoomParticipant)
+        .values(room_code=code, player_id=player.id)
+        .on_conflict_do_nothing()
+    )
     await session.commit()
     return {
         "room": code,
@@ -108,6 +116,12 @@ async def add_player(
         room_code=code,
     )
     session.add(player)
+    await session.flush()  # assign player.id before recording participation
+    await session.execute(
+        pg_insert(RoomParticipant)
+        .values(room_code=code, player_id=player.id)
+        .on_conflict_do_nothing()
+    )
     await session.commit()
     await session.refresh(player)
     return {

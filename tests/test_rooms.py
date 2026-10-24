@@ -216,18 +216,26 @@ async def test_finishing_a_room_empties_its_members(
         assert all(p.room_code is None and p.team is None for p in survivors)
 
 
-async def test_starting_again_after_finish_is_an_empty_room(
+async def test_a_finished_room_is_closed_not_restartable(
     client: AsyncClient, admin_headers: dict
 ) -> None:
-    """Finish releases the members, so a start on the same room begins clean."""
+    """Finish closes the room; the next round is a new room, not a rewind."""
     await client.post("/api/rooms", json={"code": "finish-restart"}, headers=admin_headers)
     headers = await _player(client, "R-One")
     await client.post("/api/rooms/finish-restart/join", headers=headers)
 
     await client.post("/api/rooms/finish-restart/finish", headers=admin_headers)
     restarted = await client.post("/api/rooms/finish-restart/start", headers=admin_headers)
-    assert restarted.status_code == 200
-    assert restarted.json()["phase"] == "playing"
+    assert restarted.status_code == 409
 
-    roster = await client.get("/api/rooms/finish-restart/players", headers=admin_headers)
-    assert roster.json()["count"] == 0
+    # The participant record survives even though the room closed.
+    async with SessionLocal() as session:
+        from sqlalchemy import func, select
+
+        from app.models import RoomParticipant
+        count = await session.scalar(
+            select(func.count())
+            .select_from(RoomParticipant)
+            .where(RoomParticipant.room_code == "finish-restart")
+        )
+        assert count == 1

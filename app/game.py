@@ -23,9 +23,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.auth import Claims, require_admin, require_display
 from app.database import get_session
 from app.engine import Engine, Phase
-from app.events import EVENT_KEYS
 from app.manager import manager
-from app.models import Player, Room
+from app.models import Player, Room, RoomParticipant
 from app.rooms import rooms
 from app.sabotage import sabotages
 
@@ -47,19 +46,17 @@ async def list_rooms(
     """Feeds the admin panel and the big screen.
 
     A room is one round: the operator creates a new one per round and the screens
-    follow it. So the list is newest first and `current` names the room the big
-    screen should be showing - the one with the latest `created_at`.
+    follow the newest still-open room. `current` is that room; everything else
+    is history.
 
-    `players` counts people who joined the room in the database; `clients` counts
-    live websocket connections. They differ whenever a device has joined but not
-    connected, or connected with a token from another room.
+    `players` counts everyone who joined the room (from the participant record,
+    which survives the room closing); `clients` counts live websocket
+    connections.
     """
     counts = dict(
         (
             await session.execute(
-                select(Player.room_code, func.count())
-                .where(Player.room_code.is_not(None))
-                .group_by(Player.room_code)
+                select(RoomParticipant.room_code, func.count()).group_by(RoomParticipant.room_code)
             )
         ).all()
     )
@@ -72,16 +69,17 @@ async def list_rooms(
         {
             **live[row.code],
             "players": counts.get(row.code, 0),
-            "event": row.event,
-            "label": row.label,
             "created_at": row.created_at,
+            "closed_at": row.closed_at,
         }
         # A row without an engine cannot be shown or driven; loading rooms at
         # startup is what normally keeps the two in step.
         for row in rows
         if row.code in live
     ]
-    return {"current": ordered[0]["code"] if ordered else None, "rooms": ordered}
+    # `current` is the newest still-open room; closed rooms are history.
+    current = next((room["code"] for room in ordered if room["closed_at"] is None), None)
+    return {"current": current, "rooms": ordered}
 
 
 # Lowercase, no leading dash, at most 32: it lands in URLs, paths and the join QR,
@@ -90,20 +88,9 @@ _ROOM_CODE = re.compile(r"^[a-z0-9][a-z0-9-]{1,31}$")
 
 
 class NewRoom(BaseModel):
-    # Blank means "give me the next round-N".
+    # Blank means "give me the next round-N". A room is one-shot and carries no
+    # other metadata: the code and its creation time are the whole identity.
     code: str | None = None
-    event: str | None = None
-    label: str | None = Field(default=None, max_length=80)
-
-
-class RoomPatch(BaseModel):
-    event: str | None = None
-    label: str | None = Field(default=None, max_length=80)
-
-
-def _check_event(event: str | None) -> None:
-    if event is not None and event not in EVENT_KEYS:
-        raise HTTPException(status_code=422, detail=f"unknown event: {event}")
 
 
 @router.post("", status_code=201, summary="Create a room for the next round")
@@ -124,11 +111,10 @@ async def create_room(
             status_code=422,
             detail="code must be lowercase letters, digits and dashes (2-32 chars)",
         )
-    _check_event(body.event)
     if code in codes:
         raise HTTPException(status_code=409, detail=f"room already exists: {code}")
 
-    room = Room(code=code, event=body.event, label=body.label)
+    room = Room(code=code)
     session.add(room)
     await session.commit()
     await session.refresh(room)
@@ -158,7 +144,10 @@ async def current_room(session: AsyncSession = Depends(get_session)) -> dict:
     """
     room = (
         await session.execute(
-            select(Room).order_by(Room.created_at.desc(), Room.code.desc()).limit(1)
+            select(Room)
+            .where(Room.closed_at.is_(None))
+            .order_by(Room.created_at.desc(), Room.code.desc())
+            .limit(1)
         )
     ).scalar_one_or_none()
     if room is None:
@@ -179,28 +168,6 @@ async def room_detail(
     room = await session.get(Room, code)
     if room is None:
         raise HTTPException(status_code=404, detail=f"unknown room: {code}")
-    return _room_body(room, _engine(code))
-
-
-@router.patch("/{code}", summary="Rename a room or change its event")
-async def patch_room(
-    code: str,
-    body: RoomPatch,
-    _: Claims = Depends(require_admin),
-    session: AsyncSession = Depends(get_session),
-) -> dict:
-    """Changing the code is refused rather than supported: the code is in URLs,
-    QR codes already printed and players' stored membership."""
-    room = await session.get(Room, code)
-    if room is None:
-        raise HTTPException(status_code=404, detail=f"unknown room: {code}")
-    _check_event(body.event)
-    if body.event is not None:
-        room.event = body.event
-    if body.label is not None:
-        room.label = body.label
-    await session.commit()
-    await session.refresh(room)
     return _room_body(room, _engine(code))
 
 
@@ -228,11 +195,11 @@ async def delete_room(
 
 def _room_body(room: Room, engine: Engine | None) -> dict:
     created = room.created_at
+    closed = room.closed_at
     return {
         "code": room.code,
-        "event": room.event,
-        "label": room.label,
         "created_at": created.isoformat() if isinstance(created, datetime) else created,
+        "closed_at": closed.isoformat() if isinstance(closed, datetime) else closed,
         "state": engine.snapshot() if engine is not None else None,
     }
 
@@ -247,8 +214,12 @@ async def state(code: str) -> dict:
     summary="Start the show from the first node",
     dependencies=[Depends(require_admin)],
 )
-async def start(code: str) -> dict:
+async def start(code: str, session: AsyncSession = Depends(get_session)) -> dict:
     engine = _engine(code)
+    # A closed room is history; the next round is a new room, not a rewind.
+    room = await session.get(Room, code)
+    if room is not None and room.closed_at is not None:
+        raise HTTPException(status_code=409, detail="room is closed; create a new room")
     await engine.start()
     return engine.snapshot()
 
@@ -286,15 +257,18 @@ async def resume(code: str) -> dict:
 async def finish(code: str, session: AsyncSession = Depends(get_session)) -> dict:
     engine = _engine(code)
     await engine.finish()
-    # A finished round is over: the room empties out. Clear membership and team
-    # so the room is clean if the operator starts it again, and the next round
-    # begins with whoever signs in fresh. The player rows and scores survive -
-    # only the room binding is released.
+    # A finished round is closed for good: release every member's current-room
+    # binding and team, and stamp the room so it becomes history rather than a
+    # playable show. The participant record keeps who played; the player rows
+    # and scores survive.
     await session.execute(
         update(Player)
         .where(Player.room_code == code)
         .values(room_code=None, team=None)
     )
+    room = await session.get(Room, code)
+    if room is not None:
+        room.closed_at = func.now()
     await session.commit()
     return engine.snapshot()
 
