@@ -13,6 +13,9 @@ from app.rooms import DEFAULT_ROOM, RoomRegistry, rooms
 
 @pytest.fixture
 async def client():
+    # Make `main` exist up front: a test that joins the default room must not
+    # depend on a previous test's teardown having created the engine.
+    rooms.ensure(DEFAULT_ROOM)
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as http:
         yield http
@@ -167,3 +170,64 @@ async def test_room_list_counts_players_separately_from_connections(
     room = next(r for r in response.json()["rooms"] if r["code"] == DEFAULT_ROOM)
     assert room["players"] >= 1
     assert room["clients"] == 0
+
+
+async def test_finishing_a_room_empties_its_members(
+    client: AsyncClient, admin_headers: dict
+) -> None:
+    """A finished round is over: membership and team are released, but the
+    player rows and scores stay behind for the record."""
+    created = await client.post(
+        "/api/rooms", json={"code": "finish-empty", "event": "hk_employee"}, headers=admin_headers
+    )
+    assert created.status_code == 201
+
+    for name in ("F-One", "F-Two"):
+        headers = await _player(client, name)
+        joined = await client.post("/api/rooms/finish-empty/join", headers=headers)
+        assert joined.status_code == 200
+
+    # Give both players a team, as the sabotage assignment would.
+    await client.post("/api/rooms/finish-empty/teams/assign", headers=admin_headers)
+
+    async with SessionLocal() as session:
+        members = (
+            await session.execute(select(Player).where(Player.room_code == "finish-empty"))
+        ).scalars().all()
+        assert len(members) == 2
+        assert all(member.team in ("red", "blue") for member in members)
+
+    finished = await client.post("/api/rooms/finish-empty/finish", headers=admin_headers)
+    assert finished.status_code == 200
+    assert finished.json()["phase"] == "finished"
+
+    async with SessionLocal() as session:
+        members = (
+            await session.execute(select(Player).where(Player.room_code == "finish-empty"))
+        ).scalars().all()
+        assert members == []
+        # The players still exist, just with no room and no team.
+        survivors = (
+            await session.execute(
+                select(Player).where(Player.nickname.in_(["F-One", "F-Two"]))
+            )
+        ).scalars().all()
+        assert len(survivors) == 2
+        assert all(p.room_code is None and p.team is None for p in survivors)
+
+
+async def test_starting_again_after_finish_is_an_empty_room(
+    client: AsyncClient, admin_headers: dict
+) -> None:
+    """Finish releases the members, so a start on the same room begins clean."""
+    await client.post("/api/rooms", json={"code": "finish-restart"}, headers=admin_headers)
+    headers = await _player(client, "R-One")
+    await client.post("/api/rooms/finish-restart/join", headers=headers)
+
+    await client.post("/api/rooms/finish-restart/finish", headers=admin_headers)
+    restarted = await client.post("/api/rooms/finish-restart/start", headers=admin_headers)
+    assert restarted.status_code == 200
+    assert restarted.json()["phase"] == "playing"
+
+    roster = await client.get("/api/rooms/finish-restart/players", headers=admin_headers)
+    assert roster.json()["count"] == 0

@@ -17,7 +17,7 @@ from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth import Claims, require_admin, require_display
@@ -283,9 +283,19 @@ async def resume(code: str) -> dict:
 
 
 @router.post("/{code}/finish", summary="End the show", dependencies=[Depends(require_admin)])
-async def finish(code: str) -> dict:
+async def finish(code: str, session: AsyncSession = Depends(get_session)) -> dict:
     engine = _engine(code)
     await engine.finish()
+    # A finished round is over: the room empties out. Clear membership and team
+    # so the room is clean if the operator starts it again, and the next round
+    # begins with whoever signs in fresh. The player rows and scores survive -
+    # only the room binding is released.
+    await session.execute(
+        update(Player)
+        .where(Player.room_code == code)
+        .values(room_code=None, team=None)
+    )
+    await session.commit()
     return engine.snapshot()
 
 
