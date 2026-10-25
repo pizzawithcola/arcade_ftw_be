@@ -82,13 +82,14 @@ async def list_rooms(
     return {"current": current, "rooms": ordered}
 
 
-# Lowercase, no leading dash, at most 32: it lands in URLs, paths and the join QR,
-# and a code with a slash or a capital would make `/r/{code}` ambiguous.
-_ROOM_CODE = re.compile(r"^[a-z0-9][a-z0-9-]{1,31}$")
+# Letters, digits and dashes, at most 32: it lands in URLs, paths and the join QR.
+# Case is allowed because the generated names read `R-001`, and a code with a
+# slash or a space would make `/r/{code}` ambiguous.
+_ROOM_CODE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9-]{1,31}$")
 
 
 class NewRoom(BaseModel):
-    # Blank means "give me the next round-N". A room is one-shot and carries no
+    # Blank means "give me the next R-001". A room is one-shot and carries no
     # other metadata: the code and its creation time are the whole identity.
     code: str | None = None
 
@@ -101,15 +102,15 @@ async def create_room(
 ) -> dict:
     """A new room is a row plus an engine: the show is playable the moment it exists.
 
-    Without a code the next `round-N` is used - starting a round should be one
+    Without a code the next `R-001` is used - starting a round should be one
     click, not something to invent while thirty people watch.
     """
     codes = list((await session.execute(select(Room.code))).scalars().all())
-    code = (body.code or "").strip() or _next_round_code(codes)
+    code = (body.code or "").strip() or _next_room_code(codes)
     if not _ROOM_CODE.match(code):
         raise HTTPException(
             status_code=422,
-            detail="code must be lowercase letters, digits and dashes (2-32 chars)",
+            detail="code must be letters, digits and dashes (2-32 chars)",
         )
     if code in codes:
         raise HTTPException(status_code=409, detail=f"room already exists: {code}")
@@ -124,14 +125,18 @@ async def create_room(
     return _room_body(room, rooms.get(code))
 
 
-def _next_round_code(codes: list[str]) -> str:
-    """`round-1`, `round-2`, … past whatever already exists."""
+def _next_room_code(codes: list[str]) -> str:
+    """`R-001`, `R-002`, … past whatever already exists.
+
+    Zero-padded so the codes sort and read evenly. Older rooms named `round-N`
+    are ignored rather than continued: the numbering restarted with this scheme.
+    """
     highest = 0
     for existing in codes:
-        match = re.fullmatch(r"round-(\d+)", existing)
+        match = re.fullmatch(r"R-(\d+)", existing)
         if match:
             highest = max(highest, int(match.group(1)))
-    return f"round-{highest + 1}"
+    return f"R-{highest + 1:03d}"
 
 
 @router.get("/current", summary="The room players join")

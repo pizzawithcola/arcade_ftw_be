@@ -63,11 +63,13 @@ async def test_a_round_gets_the_next_generated_code(client: AsyncClient, admin_h
     """Starting a round is one POST with no code to invent."""
     first = await client.post("/api/rooms", json={"label": "Round one"}, headers=admin_headers)
     assert first.status_code == 201
-    assert first.json()["code"].startswith("round-")
+    assert first.json()["code"].startswith("R-")
 
     second = await client.post("/api/rooms", json={}, headers=admin_headers)
     assert second.status_code == 201
     assert int(second.json()["code"].split("-")[1]) == int(first.json()["code"].split("-")[1]) + 1
+    # Zero-padded to three digits, so the codes read and sort evenly.
+    assert first.json()["code"] == "R-001" or len(first.json()["code"].split("-")[1]) == 3
 
 
 async def test_players_can_ask_which_room_is_current(client: AsyncClient, admin_headers: dict) -> None:
@@ -110,7 +112,7 @@ async def test_a_duplicate_room_code_is_refused(
     assert (await client.post("/api/rooms", json=payload, headers=admin_headers)).status_code == 409
 
 
-@pytest.mark.parametrize("code", ["Has Space", "UPPER", "-leading", "a", "x" * 33])
+@pytest.mark.parametrize("code", ["Has Space", "-leading", "a", "x" * 33, "Has/Slash"])
 async def test_a_code_that_cannot_live_in_a_url_is_refused(
     client: AsyncClient, admin_headers: dict, code: str
 ) -> None:
