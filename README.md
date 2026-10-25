@@ -220,6 +220,7 @@ pytest
 > ⚠️ `pytest` 的集成测试会 **DROP SCHEMA** 再跑迁移，**绝不能指向真实库**。
 
 > 基础镜像已镜像到自己的 ECR `arcade-ftw-backend:python-base-3.12-slim`（`public.ecr.aws` 会随机 429 限流，CI 曾连挂 3 次）。Dockerfile 顶部注释有刷新命令；注意 `--platform linux/amd64`。
+> ⚠️ ECR 的生命周期策略里有两条规则：一条**保护 `python-base-*`**（保留最近 5 个），另一条保留最近 **10** 个可部署镜像。曾经只有后者且 `tagStatus: any`，结果镜像一多就把基础镜像删了，之后每次构建都死在 `FROM` 行——改策略时别把第一条去掉。
 > 需要 `actionlint` / `hadolint`：`brew install actionlint hadolint`。
 
 ## 注意事项
