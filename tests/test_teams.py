@@ -143,6 +143,23 @@ async def test_joining_a_new_room_clears_the_team(
     assert in_b.json()["team"] is None
 
 
+async def test_rejoining_the_same_room_keeps_the_team(
+    client: AsyncClient, admin_headers: dict
+) -> None:
+    """A reconnect re-joins on every page load and must not undo an assignment."""
+    await _room(client, admin_headers, "teams-rejoin")
+    player_headers = await _login(client, "Stayer")
+    await _join(client, player_headers, "teams-rejoin")
+    await client.post("/api/rooms/teams-rejoin/teams/assign", headers=admin_headers)
+
+    assigned = (await client.get("/api/auth/me", headers=player_headers)).json()["team"]
+    assert assigned in ("red", "blue")
+
+    await _join(client, player_headers, "teams-rejoin")
+    rejoined = (await client.get("/api/auth/me", headers=player_headers)).json()["team"]
+    assert rejoined == assigned
+
+
 async def test_assign_requires_admin(client: AsyncClient, admin_headers: dict) -> None:
     await _room(client, admin_headers, "teams-auth")
     player_headers = await _login(client, "NotAdmin")

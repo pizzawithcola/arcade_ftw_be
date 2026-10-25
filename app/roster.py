@@ -58,10 +58,13 @@ async def join(
     if await session.get(Room, code) is None:
         raise HTTPException(status_code=404, detail=f"unknown room: {code}")
 
-    player.room_code = code
-    # A team belongs to the round: entering a room starts them unassigned and
-    # the host's assign call gives them a side.
-    player.team = None
+    if player.room_code != code:
+        # A team belongs to the round, so *entering a different room* clears
+        # the side. Rejoining the same room must not: the device re-joins on
+        # every page load and the team sync re-read, and wiping the side there
+        # would undo an assignment the moment it landed.
+        player.room_code = code
+        player.team = None
     # Record the participation for the room's history. Idempotent: a reconnect
     # re-joins the same room and must not double-count.
     await session.execute(
