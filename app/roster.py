@@ -185,6 +185,54 @@ async def players(
     }
 
 
+# A section's board ranks one of the four score columns, or the total.
+SECTION_COLUMNS = {
+    "hallucination": "hallucination_score",
+    "data": "data_score",
+    "sabotage": "sabotage_score",
+    "ultimate": "ultimate_score",
+    "total": "total_score",
+}
+
+
+@router.get("/{code}/leaderboard", summary="The room's ranking for one section")
+async def room_leaderboard(
+    code: str,
+    section: str = "total",
+    claims: Claims = Depends(require_signed_in),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Ranks the room by one section's score, best first.
+
+    Open to anyone signed in: the board is shown to the players and the big
+    screen at the same moment, so both read the same endpoint. A player without
+    a score row in that section reads as zero.
+    """
+    column_name = SECTION_COLUMNS.get(section)
+    if column_name is None:
+        raise HTTPException(status_code=422, detail=f"unknown section: {section}")
+    _known_room(code)
+
+    score_column = getattr(Score, column_name)
+    order = func.coalesce(score_column, 0)
+    rows = (
+        await session.execute(
+            select(Player.nickname, order.label("score"))
+            .outerjoin(Score, Score.player_id == Player.id)
+            .where(Player.room_code == code)
+            .order_by(order.desc(), Player.id)
+        )
+    ).all()
+    return {
+        "room": code,
+        "section": section,
+        "players": [
+            {"rank": index + 1, "nickname": nickname, "score": score}
+            for index, (nickname, score) in enumerate(rows)
+        ],
+    }
+
+
 @router.post(
     "/{code}/teams/assign",
     summary="Split the room's players into Red and Blue",

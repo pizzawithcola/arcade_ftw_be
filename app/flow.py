@@ -48,6 +48,12 @@ ROUND_FLOW: list[dict] = [
         "seconds_each": 20,
         "score": "hallucination",
     },
+    {
+        "type": "leaderboard",
+        "section": "hallucination",
+        "title": "Hallucination standings",
+        "duration_sec": 5,
+    },
     {"type": "game", "game": "data_shadow", "title": "Data Shadow", "duration_sec": 51, "score": "data"},
     {
         "type": "quiz",
@@ -57,6 +63,7 @@ ROUND_FLOW: list[dict] = [
         "seconds_each": 20,
         "score": "data",
     },
+    {"type": "leaderboard", "section": "data", "title": "Data Shadow standings", "duration_sec": 5},
     {
         "type": "game",
         "game": "sabotage",
@@ -68,6 +75,12 @@ ROUND_FLOW: list[dict] = [
         "score": "sabotage",
     },
     {
+        "type": "leaderboard",
+        "section": "sabotage",
+        "title": "Sabotage standings",
+        "duration_sec": 5,
+    },
+    {
         "type": "quiz",
         "title": "Ultimate Quiz",
         "duration_sec": 46,
@@ -75,5 +88,13 @@ ROUND_FLOW: list[dict] = [
         "seconds_each": 20,
         "score": "ultimate",
     },
+    {
+        "type": "leaderboard",
+        "section": "ultimate",
+        "title": "Ultimate standings",
+        "duration_sec": 5,
+    },
+    # The final, activity-wide ranking. A placeholder until its design lands.
+    {"type": "leaderboard", "section": "total", "title": "Activity Leaderboard", "duration_sec": 5},
     {"type": "outro", "title": "Wrap up", "duration_sec": 10},
 ]

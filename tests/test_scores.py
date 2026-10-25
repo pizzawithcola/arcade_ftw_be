@@ -15,10 +15,10 @@ from app.players import SECTION_FIELDS
 # rather than silently scoring the wrong section.
 HALLUCINATION_GAME = 1
 QUIZ_ROUND_1 = 2
-DATA_SHADOW = 3
-QUIZ_ROUND_2 = 4
-SABOTAGE = 5
-ULTIMATE_QUIZ = 6
+DATA_SHADOW = 4
+QUIZ_ROUND_2 = 5
+SABOTAGE = 7
+ULTIMATE_QUIZ = 9
 INTRO = 0
 
 

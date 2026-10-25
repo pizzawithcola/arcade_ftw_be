@@ -84,3 +84,54 @@ async def test_players_without_a_score_row_read_as_zero(
     assert by_name[f"{prefix}Scored"]["total_score"] == 99999
     assert by_name[f"{prefix}Unscored"]["total_score"] == 0
     assert by_name[f"{prefix}Scored"]["rank"] < by_name[f"{prefix}Unscored"]["rank"]
+
+
+async def test_room_leaderboard_ranks_one_section(
+    client: AsyncClient, admin_headers: dict
+) -> None:
+    """The in-game board: a room's players ranked by one section's column."""
+    prefix = "lb-room-"
+    room = "lb-room"
+
+    created = await client.post("/api/rooms", json={"code": room}, headers=admin_headers)
+    assert created.status_code == 201
+
+    ids: dict[str, int] = {}
+    tokens: dict[str, dict] = {}
+    for name in ("Low", "High", "Mid"):
+        login = await client.post(
+            "/api/auth/player", json={"nickname": f"{prefix}{name}", "event": "hk_employee"}
+        )
+        assert login.status_code == 200
+        ids[name] = login.json()["player_id"]
+        tokens[name] = {"Authorization": "Bearer " + login.json()["token"]}
+        joined = await client.post(f"/api/rooms/{room}/join", headers=tokens[name])
+        assert joined.status_code == 200
+
+    # Set only the hallucination column; other sections stay at zero.
+    for name, total in (("Low", 100), ("High", 900), ("Mid", 500)):
+        await _score(client, admin_headers, ids[name], total)
+
+    # A player token reads the board too - it is shown on the tablets.
+    response = await client.get(
+        f"/api/rooms/{room}/leaderboard?section=hallucination", headers=tokens["Low"]
+    )
+    assert response.status_code == 200
+    board = response.json()["players"]
+    assert [row["nickname"] for row in board] == [
+        f"{prefix}High",
+        f"{prefix}Mid",
+        f"{prefix}Low",
+    ]
+    assert [row["score"] for row in board] == [900, 500, 100]
+    assert [row["rank"] for row in board] == [1, 2, 3]
+
+
+async def test_room_leaderboard_rejects_an_unknown_section(
+    client: AsyncClient, admin_headers: dict
+) -> None:
+    await client.post("/api/rooms", json={"code": "lb-bad-section"}, headers=admin_headers)
+    response = await client.get(
+        "/api/rooms/lb-bad-section/leaderboard?section=nonsense", headers=admin_headers
+    )
+    assert response.status_code == 422
