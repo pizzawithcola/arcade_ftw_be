@@ -103,6 +103,9 @@ class Engine:
             "index": self.index,
             "node_count": self.node_count,
             "node": self._node(),
+            # The whole rundown, so a console can label every node without
+            # keeping its own copy of the flow (which would drift).
+            "flow": self.flow,
             "remaining_ms": int(remaining * 1000),
             "question": self._question(remaining),
             "server_time_ms": int(time.time() * 1000),
