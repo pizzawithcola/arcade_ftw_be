@@ -545,6 +545,9 @@ async def auto_start_sabotage(code: str, main_engine) -> bool:
             blue = set(ids[split:])
             for player in players:
                 player.team = "red" if player.id in red else "blue"
+        # Commit before anything is broadcast: a player's device re-reads
+        # /api/auth/me the instant the reveal appears and must find its side
+        # already written. Never move the reveal above this line.
         await session.commit()
 
     if solo:
