@@ -280,6 +280,9 @@ async def finish(code: str, session: AsyncSession = Depends(get_session)) -> dic
 )
 async def reset(code: str) -> dict:
     engine = _engine(code)
+    # Rewinding the show throws away any in-progress Sabotage game too, so a
+    # later jump to node 5 starts it from scratch rather than resuming.
+    sabotages.remove(code)
     await engine.reset()
     return engine.snapshot()
 
@@ -287,6 +290,10 @@ async def reset(code: str) -> dict:
 @router.post("/{code}/go/{index}", summary="Jump to a node", dependencies=[Depends(require_admin)])
 async def go_to(code: str, index: int) -> dict:
     engine = _engine(code)
+    # Every jump starts the destination and everything after it afresh: drop the
+    # previous Sabotage game so landing on node 5 re-assigns teams and re-runs
+    # from team_reveal, however many times the operator rehearses it.
+    sabotages.remove(code)
     try:
         await engine.go_to(index)
     except ValueError as exc:

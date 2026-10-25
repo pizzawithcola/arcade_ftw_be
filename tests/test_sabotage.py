@@ -404,6 +404,54 @@ async def test_auto_start_when_the_flow_reaches_the_sabotage_node(
     sabotages.remove("sab-auto")
 
 
+async def test_every_jump_back_to_node_5_reassigns_teams(
+    client: AsyncClient, admin_headers: dict
+) -> None:
+    """The operator rehearses by jumping away and back: each landing on node 5
+    is a brand new game, with teams re-assigned from the current roster."""
+    from app.rooms import rooms
+    from app.sabotage import sabotages
+
+    await client.post("/api/rooms", json={"code": "sab-rejump"}, headers=admin_headers)
+    for name in ("One", "Two"):
+        headers, _ = await _login(client, name)
+        await client.post("/api/rooms/sab-rejump/join", headers=headers)
+
+    engine = rooms.get("sab-rejump")
+    assert engine is not None
+
+    # First landing (via the operator's jump endpoint): a fresh game.
+    await client.post("/api/rooms/sab-rejump/go/5", headers=admin_headers)
+    first = sabotages.get("sab-rejump")
+    assert first is not None
+    assert first.phase == "team_reveal"
+
+    # Jump away, then back: the previous game is discarded and teams re-roll.
+    await client.post("/api/rooms/sab-rejump/go/0", headers=admin_headers)
+    assert sabotages.get("sab-rejump") is None
+
+    await client.post("/api/rooms/sab-rejump/go/5", headers=admin_headers)
+    second = sabotages.get("sab-rejump")
+    assert second is not None
+    assert second is not first  # a new engine, not the resumed one
+    assert second.phase == "team_reveal"
+
+    from app.database import SessionLocal
+    from sqlalchemy import select
+
+    from app.models import Player
+
+    async with SessionLocal() as session:
+        players = (
+            await session.execute(select(Player).where(Player.room_code == "sab-rejump"))
+        ).scalars().all()
+        teams = {player.team for player in players}
+        assert teams == {"red", "blue"}
+
+    await engine.finish()
+    sabotages.remove("sab-rejump")
+
+
 async def test_a_solo_room_is_paid_and_the_game_is_skipped(
     client: AsyncClient, admin_headers: dict
 ) -> None:
