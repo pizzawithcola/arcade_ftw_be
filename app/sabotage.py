@@ -510,6 +510,10 @@ async def auto_start_sabotage(code: str, main_engine) -> bool:
     be idempotent: it only acts when the flow is playing the sabotage node and
     the sabotage engine is still in `setup`. Teams are assigned randomly if the
     host has not done it, so the whole task runs with zero operator input.
+
+    A room with a single player cannot field two teams. Rather than parking the
+    show on a node nobody can play for its full slot, that player is paid
+    `cfg.SOLO_SCORE` and the flow is moved straight past the node.
     """
     node = main_engine._node() or {}
     if node.get("game") != "sabotage":
@@ -526,15 +530,28 @@ async def auto_start_sabotage(code: str, main_engine) -> bool:
                 select(Player).where(Player.room_code == code).order_by(Player.id)
             )
         ).scalars().all()
-        ids = [player.id for player in players]
-        random.shuffle(ids)
-        split = (len(ids) + 1) // 2  # odd rooms give Red the extra player
-        red = set(ids[:split])
-        blue = set(ids[split:])
-        for player in players:
-            player.team = "red" if player.id in red else "blue"
+        solo = len(players) == 1
+        red: set[int] = set()
+        blue: set[int] = set()
+        if solo:
+            # No teams at all: there is nobody to put on the other side, and a
+            # leftover side on the player would only confuse the screens.
+            await _pay_solo(session, players[0])
+        else:
+            ids = [player.id for player in players]
+            random.shuffle(ids)
+            split = (len(ids) + 1) // 2  # odd rooms give Red the extra player
+            red = set(ids[:split])
+            blue = set(ids[split:])
+            for player in players:
+                player.team = "red" if player.id in red else "blue"
         await session.commit()
 
+    if solo:
+        # Outside the session on purpose: advancing the flow re-enters this
+        # listener, which opens a session of its own.
+        await _skip_sabotage_node(main_engine)
+        return False
     if not red or not blue:
         return False
 
@@ -544,6 +561,28 @@ async def auto_start_sabotage(code: str, main_engine) -> bool:
     engine.start()
     await engine.run_async()
     return True
+
+
+async def _pay_solo(session: AsyncSession, player: Player) -> None:
+    """Pay a lone player the perfect winning score.
+
+    Setting the column rather than adding to it keeps this idempotent: the
+    listener runs again on every state change while the flow is on this node.
+    """
+    score = await session.get(Score, player.id)
+    if score is None:
+        score = Score(player_id=player.id)
+        session.add(score)
+    score.sabotage_score = cfg.SOLO_SCORE
+
+
+async def _skip_sabotage_node(main_engine) -> None:
+    """Move the flow past the Sabotage node instead of playing it."""
+    next_index = main_engine.index + 1
+    if next_index >= main_engine.node_count:
+        return
+    logger.info("sabotage skipped: the room has a single player")
+    await main_engine.go_to(next_index)
 
 
 class VoteBody(BaseModel):

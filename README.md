@@ -94,6 +94,8 @@ pytest                        # 集成测试：迁移 + 读写往返
 | `GET /api/sabotage/{code}/state` | — | 当前阶段、预算、比分、已用卡、可选卡（不暴露个人投票）|
 | `WS /api/ws?room={code}` | — | 只收推送：连上先推该房间当前状态，之后只扇出给**同房间**的连接 |
 
+> **单人房不跑 Sabotage**：一个玩家无法分成两队，所以主流程到该节点时直接 `go_to(index + 1)` 越过它，该玩家 `sabotage_score` 记为 `cfg.SOLO_SCORE`（2700，完美获胜分）。0 人房保持原行为（不启动、节点照常走完）。细节见 `arcade_ftw_docs/games/sabotage.md`。
+
 管理员控制走 **HTTP 而不是 WS**：可鉴权、能在 `/api/docs` 里直接点、失败返回真实状态码；状态变化再由 WS 广播给所有人。
 
 ### 活动与玩家身份

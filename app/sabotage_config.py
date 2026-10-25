@@ -12,6 +12,13 @@ from __future__ import annotations
 STARTING_BUDGET = 100_000
 WINNER_BONUS = 100
 
+# What a room with a single player is paid when Sabotage is skipped: two teams
+# cannot be fielded with one person, so the section would otherwise be a zero
+# on the leaderboard. This is a *perfect* win - the best reachable team total
+# (2_600, found by exhausting the matrix under the shared deck and budget) plus
+# the bonus. Re-derive it whenever cards, costs, the matrix or the budget move.
+SOLO_SCORE = 2_700
+
 # Every attack card is single-use and shared: once either team plays it, the
 # card is SPENT for the rest of the show.
 ATTACK_CARDS: dict[str, dict] = {

@@ -404,6 +404,40 @@ async def test_auto_start_when_the_flow_reaches_the_sabotage_node(
     sabotages.remove("sab-auto")
 
 
+async def test_a_solo_room_is_paid_and_the_game_is_skipped(
+    client: AsyncClient, admin_headers: dict
+) -> None:
+    from app.database import SessionLocal
+    from app.models import Player, Score
+    from app.rooms import rooms
+    from app.sabotage import sabotages
+
+    await client.post("/api/rooms", json={"code": "sab-solo"}, headers=admin_headers)
+    headers, player_id = await _login(client, "Solo")
+    await client.post("/api/rooms/sab-solo/join", headers=headers)
+
+    engine = rooms.get("sab-solo")
+    assert engine is not None
+    await engine.go_to(5)
+
+    # One player cannot field two teams: no game runs, and the flow has already
+    # moved past the node instead of waiting out its 170-second slot.
+    assert sabotages.get("sab-solo") is None
+    assert engine.index == 6
+    assert (engine._node() or {}).get("game") != "sabotage"
+
+    async with SessionLocal() as session:
+        score = await session.get(Score, player_id)
+        assert score is not None
+        assert score.sabotage_score == cfg.SOLO_SCORE
+        player = await session.get(Player, player_id)
+        assert player is not None
+        # A skipped game assigns nobody a side.
+        assert player.team is None
+
+    await engine.finish()
+
+
 async def test_finish_persists_each_members_team_score(
     client: AsyncClient, admin_headers: dict
 ) -> None:
