@@ -1,18 +1,22 @@
-"""The Sabotage engine: one per room, in memory like the show engine.
+"""The Sabotage v2 engine: one per room, in memory like the show engine.
 
-A room's players are already split into Red and Blue (see the teams endpoint),
-so this engine only runs the game that split feeds: three attack/defence
-rounds where each round's action is the card a majority voted for.
+Four rounds, each with its own deck. Every card is a vector over three domains
+(data, people, infra); every round has one target domain. Each team builds a
+hand of up to four cards inside a 100-point budget, and the two builds are
+compared column by column when the round ends.
 
-The single-use Attack deck is shared: every engine lives in process memory and
-`spent` is global to the room, never per team. The Defence deck reappears each
-round. The whole show is driven by a monotonic clock like the main engine, so
-pausing the main flow is enough to pause this one too - both read the same
-wall-clock only for display.
+The show inside the game:
 
-Votes are a plain map from player to card. A vote cast after the timer has
-already advanced is refused by phase, so the last accepted vote before the
-deadline is the one that counts.
+    team_reveal -> brief -> [select -> reveal] x4 -> final -> done
+
+Teams are drawn when the flow reaches this node (see `auto_start_sabotage`),
+which is what makes the reveal the first thing a player sees.
+
+Votes are a set of cards per player. At the end of the select phase the team's
+set is aggregated: most-voted first, ties broken by strength in the round's
+target (never by price, which would reward voting for expensive cards), then
+affordable-first within the budget and the four-card limit. Cards that do not
+fit are skipped, so a team still gets the best build its votes can pay for.
 """
 
 from __future__ import annotations
@@ -21,6 +25,7 @@ import asyncio
 import logging
 import random
 import time
+from collections import Counter
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 
@@ -30,50 +35,119 @@ logger = logging.getLogger(__name__)
 
 TEAMS = ("red", "blue")
 
+PHASES = (
+    "setup",
+    "team_reveal",
+    "brief",
+    "select",
+    "reveal",
+    "final",
+    "done",
+)
+
 
 class SabotageError(Exception):
     """A player or host action that the current phase cannot accept."""
 
 
+# --- voting aggregation -------------------------------------------------------
+def aggregate(
+    votes: dict[int, list[str]],
+    deck: list[str],
+    target: str,
+    fill: bool = True,
+) -> tuple[list[str], list[dict]]:
+    """Turn a team's votes into one build.
+
+    Returns the chosen cards and a log of what was dropped and why, because
+    "I voted for it, why was it not bought" is the one question a player will
+    ask during a 30-second phase.
+
+    Pure and deterministic, so the tests can pin it.
+    """
+    allowed = set(deck)
+    counts: Counter[str] = Counter()
+    for card_ids in votes.values():
+        for card_id in card_ids:
+            if card_id in allowed:
+                counts[card_id] += 1
+
+    target_index = cfg.DOMAINS.index(target)
+    ranked = sorted(
+        counts,
+        key=lambda card: (
+            -counts[card],
+            -cfg.CARDS[card]["vector"][target_index],
+            cfg.CARDS[card]["cost"],
+        ),
+    )
+
+    chosen: list[str] = []
+    log: list[dict] = []
+    spent = 0
+    for card in ranked:
+        cost = cfg.CARDS[card]["cost"]
+        if len(chosen) >= cfg.MAX_CARDS:
+            log.append({"card": card, "reason": "slots"})
+            continue
+        if spent + cost > cfg.BUDGET:
+            log.append({"card": card, "reason": "budget"})
+            continue
+        chosen.append(card)
+        spent += cost
+
+    if not chosen and fill:
+        # Nobody voted, or nothing voted for was affordable. Fall back to the
+        # strongest affordable hand on the target so a team that stayed quiet
+        # is not handed a zero by accident. `fill=False` while the phase is
+        # still open: an auto-filled preview would tell the team it had already
+        # decided something.
+        for card in sorted(
+            deck,
+            key=lambda card: (-cfg.CARDS[card]["vector"][target_index], cfg.CARDS[card]["cost"]),
+        ):
+            cost = cfg.CARDS[card]["cost"]
+            if len(chosen) >= cfg.MAX_CARDS or spent + cost > cfg.BUDGET:
+                continue
+            chosen.append(card)
+            spent += cost
+
+    return chosen, log
+
+
+# --- the engine ---------------------------------------------------------------
 @dataclass
 class SabotageEngine:
     code: str
 
-    phase: str = "setup"  # setup / team_reveal / attack / defend / tie_break /
-    # resolve / team_result / payout / done
-    round: int = 1
+    phase: str = "setup"
+    # 0-based index into cfg.ROUNDS.
+    round: int = 0
 
     teams: dict[str, set[int]] = field(default_factory=lambda: {"red": set(), "blue": set()})
-    budgets: dict[str, int] = field(default_factory=lambda: {"red": 0, "blue": 0})
     scores: dict[str, int] = field(default_factory=lambda: {"red": 0, "blue": 0})
-    spent: set[str] = field(default_factory=set)
-    votes: dict[int, str] = field(default_factory=dict)
+    rounds_won: dict[str, int] = field(default_factory=lambda: {"red": 0, "blue": 0})
 
-    # The card the acting team settled on, and the defence played against it.
-    attack_card: str | None = None
-    defence_card: str | None = None
+    # player id -> the cards that player wants this round
+    votes: dict[int, list[str]] = field(default_factory=dict)
+    # The locked build each side plays, filled when `select` ends.
+    picks: dict[str, list[str]] = field(default_factory=lambda: {"red": [], "blue": []})
+    dropped: dict[str, list[dict]] = field(default_factory=lambda: {"red": [], "blue": []})
+    # Every finished round, so the final screen can replay them.
+    history: list[dict] = field(default_factory=list)
     last_result: dict | None = None
-    # When a vote ties, only these cards may be voted on again.
-    tie_candidates: list[str] = field(default_factory=list)
-    # The phase a tie returns to once broken.
-    _after_tie: str | None = None
 
-    # ─── clock, same discipline as the main engine ───────────────────────────
+    # --- clock, same discipline as the main engine ---
     _deadline: float | None = None
     _runner: asyncio.Task | None = None
     _wake: asyncio.Event | None = None
     _listeners: list[Callable[[], Awaitable[None]]] = field(default_factory=list)
-    # Pause freezes the current phase's remaining time, exactly like the main
-    # engine, so one operator action stops both clocks together.
     paused: bool = False
     _remaining: float = 0.0
-    # Whether the room broadcast is already wired, so a re-start does not add
-    # duplicate listeners.
     _wired: bool = False
-    # Called once the game reaches `done`, to persist team scores.
     _on_finish: Callable[[], Awaitable[None]] | None = None
 
-    # ─── observers ───────────────────────────────────────────────────────────
+    # --- observers ---
     def subscribe(self, listener: Callable[[], Awaitable[None]]) -> None:
         if listener not in self._listeners:
             self._listeners.append(listener)
@@ -85,243 +159,167 @@ class SabotageEngine:
             except Exception:  # noqa: BLE001 - one bad listener must not stall the show
                 logger.exception("sabotage listener failed")
 
-    # ─── helpers ─────────────────────────────────────────────────────────────
-    def _scenario(self) -> dict:
-        return cfg.SCENARIOS[min(self.round, len(cfg.SCENARIOS)) - 1]
+    # --- round helpers ---
+    def round_spec(self) -> dict:
+        return cfg.ROUNDS[min(self.round, len(cfg.ROUNDS) - 1)]
 
-    def _attacker(self) -> str:
-        return self._scenario()["attacker"]
+    def _role(self, team: str) -> str:
+        spec = self.round_spec()
+        return "attacker" if team == spec["attacker"] else "defender"
 
-    def _defender(self) -> str:
-        return self._scenario()["defender"]
+    def deck_for(self, team: str) -> list[str]:
+        return cfg.cards_for(self.round, self._role(team))
 
-    def _voting_team(self) -> str:
-        """Who is voting right now, or None outside a vote phase."""
-        if self.phase == "attack":
-            return self._attacker()
-        if self.phase == "defend":
-            return self._defender()
-        if self.phase == "tie_break":
-            # A tie revotes the side whose vote just tied.
-            return self._attacker() if self._after_tie == "attack" else self._defender()
-        return ""
-
-    def _attack_options(self) -> list[str]:
-        return [
-            card
-            for card, spec in cfg.ATTACK_CARDS.items()
-            if card not in self.spent and spec["cost"] <= self.budgets[self._attacker()]
-        ]
-
-    def _defence_options(self) -> list[str]:
-        return [
-            card
-            for card, spec in cfg.DEFENCE_CARDS.items()
-            if spec["cost"] <= self.budgets[self._defender()]
-        ]
+    def _duration(self) -> float:
+        if self.phase == "select" and self.round == 0:
+            return cfg.TIMINGS["select_first"]
+        return cfg.TIMINGS.get(self.phase, 5)
 
     def _arm(self) -> None:
-        duration = cfg.TIMINGS.get(self.phase, 5)
-        self._deadline = time.monotonic() + duration
+        self._deadline = time.monotonic() + self._duration()
 
-    def _vote_outcome(self, candidates: list[str]) -> tuple[str | None, list[str] | None]:
-        """(winner, tied) - the unique most-voted card, or the tied set.
+    # --- live aggregation, so the bars move while people vote ---
+    def team_votes(self, team: str) -> dict[int, list[str]]:
+        return {
+            player_id: cards
+            for player_id, cards in self.votes.items()
+            if player_id in self.teams[team]
+        }
 
-        No vote at all counts as every candidate tied, so the revote offers the
-        full deck rather than picking for people who never looked down.
+    def live_build(self, team: str) -> tuple[list[str], list[dict]]:
+        """The build the team's votes point at right now, without the
+        end-of-phase fallback: an empty bar is honest about having no votes."""
+        spec = self.round_spec()
+        return aggregate(
+            self.team_votes(team), self.deck_for(team), spec["target"], fill=False
+        )
+
+    def team_view(self, team: str) -> dict:
+        """What one team's own devices may see while everybody is choosing.
+
+        The broadcast is public, so it cannot carry a live build: the other side
+        reads the same message. Each device asks for its own team instead, which
+        keeps the two builds simultaneous until the reveal.
         """
-        tally = {card: 0 for card in candidates}
-        for card in self.votes.values():
-            if card in tally:
-                tally[card] += 1
-        if not tally:
-            return None, list(candidates)
-        top = max(tally.values())
-        winners = [card for card, count in tally.items() if count == top]
-        return (winners[0], None) if len(winners) == 1 else (None, winners)
+        build, dropped = self.live_build(team)
+        return {
+            "team": team,
+            "role": self._role(team),
+            "round": self.round + 1,
+            "target": self.round_spec()["target"],
+            "deck": self.deck_for(team),
+            "build": build,
+            "budget": cfg.BUDGET - cfg.cost_of(build),
+            "vector": list(cfg.vector_of(build)),
+            "votes": self.vote_counts(team),
+            "dropped": dropped,
+            "voters": len(self.team_votes(team)),
+            "members": len(self.teams[team]),
+        }
 
-    def _cheapest(self, candidates: list[str], deck: dict) -> str:
-        return min(candidates, key=lambda card: deck[card]["cost"])
+    def vote_counts(self, team: str) -> dict[str, int]:
+        allowed = set(self.deck_for(team))
+        counts: Counter[str] = Counter()
+        for cards in self.team_votes(team).values():
+            for card in cards:
+                if card in allowed:
+                    counts[card] += 1
+        return dict(counts)
 
-    def _start_tie(self, candidates: list[str], after: str) -> None:
-        self.tie_candidates = list(candidates)
-        self._after_tie = after
-        self.votes = {}
-        self.phase = "tie_break"
-        self._arm()
-
-    # ─── the show ────────────────────────────────────────────────────────────
+    # --- lifecycle ---
     def start(self) -> None:
-        """Begin the reveal. Teams must already be assigned and non-empty."""
-        if self.phase != "setup":
-            raise SabotageError("already started")
-        for team in TEAMS:
-            if not self.teams[team]:
-                raise SabotageError(f"team {team} is empty; assign teams first")
-        self.budgets = {team: cfg.STARTING_BUDGET for team in TEAMS}
-        self.scores = {team: 0 for team in TEAMS}
-        self.spent = set()
-        self.round = 1
+        if not self.teams["red"] or not self.teams["blue"]:
+            raise SabotageError("both teams need at least one player")
         self.phase = "team_reveal"
         self._arm()
 
-    def cast_vote(self, player_id: int, card_id: str) -> str:
-        """Record one player's current choice. The last valid one wins."""
+    def cast_vote(self, player_id: int, cards: list[str]) -> None:
+        if self.phase != "select":
+            raise SabotageError(f"not taking votes in phase: {self.phase}")
         if self.paused:
-            raise SabotageError("show is paused")
-        team = self._voting_team()
-        if not team:
-            raise SabotageError(f"no vote is open in phase {self.phase}")
-        if player_id not in self.teams[team]:
-            raise SabotageError("only the acting team votes")
+            raise SabotageError("the show is paused")
+        team = next((side for side in TEAMS if player_id in self.teams[side]), None)
+        if team is None:
+            raise SabotageError("player has no team")
+        unique = list(dict.fromkeys(cards))
+        deck = self.deck_for(team)
+        if any(card not in deck for card in unique):
+            raise SabotageError("card is not in this round's deck")
+        if len(unique) > cfg.MAX_CARDS:
+            raise SabotageError(f"at most {cfg.MAX_CARDS} cards")
+        if cfg.cost_of(unique) > cfg.BUDGET:
+            raise SabotageError("over budget")
+        self.votes[player_id] = unique
 
-        if self.phase == "attack":
-            if card_id not in self._attack_options():
-                raise SabotageError("card is not available to the attacking team")
-        elif self.phase == "defend":
-            if card_id not in self._defence_options():
-                raise SabotageError("card is not available to the defending team")
-        else:  # tie_break
-            if card_id not in self.tie_candidates:
-                raise SabotageError("card is not among the tied cards")
+    def _lock_picks(self) -> None:
+        spec = self.round_spec()
+        for team in TEAMS:
+            cards, dropped = aggregate(
+                self.team_votes(team), self.deck_for(team), spec["target"]
+            )
+            self.picks[team] = cards
+            self.dropped[team] = dropped
+        self.last_result = self._resolve(spec)
 
-        self.votes[player_id] = card_id
-        return card_id
-
-    def advance(self) -> None:
-        """Step the state machine once, whatever the phase demands.
-
-        Pure and synchronous on purpose: the async runner calls it on the
-        clock, and tests call it directly to move a whole show instantly.
-        """
-        if self.phase == "setup":
-            return
-
-        if self.phase == "team_reveal":
-            self._begin_attack()
-        elif self.phase == "attack":
-            self._settle_attack()
-        elif self.phase == "defend":
-            self._settle_defence()
-        elif self.phase == "tie_break":
-            self._settle_tie()
-        elif self.phase == "resolve":
-            self._after_resolve()
-        elif self.phase == "team_result":
-            self._apply_payout()
-        elif self.phase == "payout":
-            self.phase = "done"
-
-    def _begin_attack(self) -> None:
-        self.votes = {}
-        self.attack_card = None
-        self.defence_card = None
-        self.last_result = None
-        self.phase = "attack"
-        self._arm()
-
-    def _settle_attack(self) -> None:
-        options = self._attack_options()
-        chosen, tied = self._vote_outcome(options)
-        if chosen is None:
-            assert tied is not None
-            self._start_tie(tied, after="attack")
-            return
-
-        self.attack_card = chosen
-        self.budgets[self._attacker()] -= cfg.ATTACK_CARDS[chosen]["cost"]
-        self.spent.add(chosen)
-        self.votes = {}
-        self.phase = "defend"
-        self._arm()
-
-    def _settle_defence(self) -> None:
-        options = self._defence_options()
-        chosen, tied = self._vote_outcome(options)
-        if chosen is None:
-            assert tied is not None
-            self._start_tie(tied, after="defend")
-            return
-
-        self.defence_card = chosen
-        self.budgets[self._defender()] -= cfg.DEFENCE_CARDS[chosen]["cost"]
-        self._apply_outcome()
-        self.votes = {}
-        self.phase = "resolve"
-        self._arm()
-
-    def _settle_tie(self) -> None:
-        if self._after_tie == "attack":
-            deck = cfg.ATTACK_CARDS
-        else:
-            deck = cfg.DEFENCE_CARDS
-        chosen, _ = self._vote_outcome(self.tie_candidates)
-        if chosen is None:
-            chosen = self._cheapest(self.tie_candidates, deck)
-
-        if self._after_tie == "attack":
-            self.attack_card = chosen
-            self.budgets[self._attacker()] -= deck[chosen]["cost"]
-            self.spent.add(chosen)
-            self.votes = {}
-            self.phase = "defend"
-        else:
-            self.defence_card = chosen
-            self.budgets[self._defender()] -= deck[chosen]["cost"]
-            self._apply_outcome()
-            self.votes = {}
-            self.phase = "resolve"
-        self.tie_candidates = []
-        self._after_tie = None
-        self._arm()
-
-    def _apply_outcome(self) -> None:
-        outcome = cfg.EFFECT_MATRIX[self.attack_card][self.defence_card]
-        attack_spec = cfg.ATTACK_CARDS[self.attack_card]
-        defence_spec = cfg.DEFENCE_CARDS[self.defence_card]
-        attacker = self._attacker()
-        defender = self._defender()
-
-        if outcome == "blocked":
-            delta_attack = 0
-            delta_defence = defence_spec["success"]
-        elif outcome == "failed":
-            delta_attack = attack_spec["success"]
-            delta_defence = defence_spec["fail"]
-        else:  # partial
-            delta_attack = 0
-            delta_defence = 0
-
-        self.scores[attacker] += delta_attack
-        self.scores[defender] += delta_defence
-        self.last_result = {
-            "round": self.round,
+    def _resolve(self, spec: dict) -> dict:
+        attacker = spec["attacker"]
+        defender = spec["defender"]
+        attack_vector = cfg.vector_of(self.picks[attacker])
+        defence_vector = cfg.vector_of(self.picks[defender])
+        result = cfg.score_round(attack_vector, defence_vector, spec["target"])
+        self.scores[attacker] += result["attack_points"]
+        self.scores[defender] += result["defence_points"]
+        winner = attacker if result["broke_target"] else defender
+        self.rounds_won[winner] += 1
+        record = {
+            "round": spec["round"],
+            "theme": spec["theme"],
+            "target": spec["target"],
             "attacker": attacker,
             "defender": defender,
-            "attack_card": self.attack_card,
-            "defence_card": self.defence_card,
-            "outcome": outcome,
-            "attack_delta": delta_attack,
-            "defence_delta": delta_defence,
+            "attack": self.picks[attacker],
+            "defence": self.picks[defender],
+            "attack_vector": list(attack_vector),
+            "defence_vector": list(defence_vector),
+            "winner": winner,
+            "points": {
+                attacker: result["attack_points"],
+                defender: result["defence_points"],
+            },
+            **result,
         }
+        self.history.append(record)
+        return record
 
-    def _after_resolve(self) -> None:
-        if self.round < len(cfg.SCENARIOS):
-            self.round += 1
-            self._begin_attack()
+    def advance(self) -> None:
+        """Move to the next phase. Called by the clock and by the console."""
+        if self.phase == "setup":
+            return
+        if self.phase == "team_reveal":
+            self.phase = "brief"
+        elif self.phase == "brief":
+            self.phase = "select"
+        elif self.phase == "select":
+            self._lock_picks()
+            self.phase = "reveal"
+        elif self.phase == "reveal":
+            if self.round + 1 < len(cfg.ROUNDS):
+                self.round += 1
+                self.votes = {}
+                self.picks = {"red": [], "blue": []}
+                self.dropped = {"red": [], "blue": []}
+                self.phase = "select"
+            else:
+                self.phase = "final"
+        elif self.phase == "final":
+            self.phase = "done"
+            return
         else:
-            self.phase = "team_result"
-            self._arm()
-
-    def _apply_payout(self) -> None:
-        winner = "red" if self.scores["red"] >= self.scores["blue"] else "blue"
-        self.scores[winner] += cfg.WINNER_BONUS
-        self.last_result = {**(self.last_result or {}), "winner": winner, "payout": cfg.WINNER_BONUS}
-        self.phase = "payout"
+            return
         self._arm()
 
+    # --- snapshot for the screens ---
     def snapshot(self) -> dict:
-        """Everything the screens need to render the current moment."""
         if self.paused:
             remaining = max(0.0, self._remaining)
         elif self._deadline is not None:
@@ -329,40 +327,48 @@ class SabotageEngine:
         else:
             remaining = 0.0
 
-        scenario = self._scenario() if self.round <= len(cfg.SCENARIOS) else None
+        spec = self.round_spec()
+        # While selecting, no build is public: both sides commit at the same
+        # time, and a broadcast cannot be sent to one team only. Each device
+        # fetches its own side from /team instead.
+        selecting = self.phase == "select"
         return {
             "code": self.code,
             "phase": self.phase,
             "paused": self.paused,
-            "round": self.round,
-            "attacker": scenario["attacker"] if scenario else None,
-            "defender": scenario["defender"] if scenario else None,
+            "round": self.round + 1,
+            "rounds": len(cfg.ROUNDS),
             "remaining_ms": int(remaining * 1000),
-            "budgets": dict(self.budgets),
+            "target": spec["target"],
+            "theme": spec["theme"],
+            "attacker": spec["attacker"],
+            "defender": spec["defender"],
+            "attack_brief": spec["attack_brief"],
+            "defence_brief": spec["defence_brief"],
+            "teams": {team: sorted(self.teams[team]) for team in TEAMS},
             "scores": dict(self.scores),
-            "spent": sorted(self.spent),
-            "scenario": scenario,
-            "voting_team": self._voting_team() or None,
-            "options": self._options_for(self._voting_team()),
-            "tie_candidates": list(self.tie_candidates),
-            "attack_card": self.attack_card,
-            "defence_card": self.defence_card,
+            "rounds_won": dict(self.rounds_won),
+            "decks": {
+                "red": self.deck_for("red"),
+                "blue": self.deck_for("blue"),
+            },
+            "builds": {} if selecting else {team: list(self.picks[team]) for team in TEAMS},
+            "budget": (
+                {} if selecting else {team: cfg.BUDGET - cfg.cost_of(self.picks[team]) for team in TEAMS}
+            ),
+            "vectors": (
+                {} if selecting else {team: list(cfg.vector_of(self.picks[team])) for team in TEAMS}
+            ),
+            "votes": {} if selecting else {team: self.vote_counts(team) for team in TEAMS},
+            "dropped": self.dropped if self.phase in ("reveal", "final") else {},
+            "cards": cfg.CARDS,
+            "domains": list(cfg.DOMAINS),
+            "outcome_names": {f"{k[0]}-{k[1]}": v for k, v in cfg.OUTCOME_NAMES.items()},
             "last_result": self.last_result,
-            # Full card decks, so the screens render names, costs and
-            # descriptions without keeping their own copy of the rules.
-            "cards": {"attack": cfg.ATTACK_CARDS, "defence": cfg.DEFENCE_CARDS},
+            "history": self.history,
         }
 
-    def _options_for(self, team: str) -> list[str]:
-        if self.phase == "attack":
-            return self._attack_options()
-        if self.phase == "defend":
-            return self._defence_options()
-        if self.phase == "tie_break":
-            return list(self.tie_candidates)
-        return []
-
-    # ─── the clock ───────────────────────────────────────────────────────────
+    # --- the clock ---
     def _ensure_runner(self) -> None:
         if self._runner is None or self._runner.done():
             self._wake = asyncio.Event()
@@ -377,8 +383,8 @@ class SabotageEngine:
                     self._wake.clear()
                     continue
                 if self._deadline is None:
-                    self._deadline = time.monotonic() + cfg.TIMINGS.get(self.phase, 5)
-                timeout = max(0.0, self._deadline - time.monotonic())
+                    self._arm()
+                timeout = max(0.0, (self._deadline or 0) - time.monotonic())
                 try:
                     assert self._wake is not None
                     await asyncio.wait_for(self._wake.wait(), timeout=timeout)
@@ -389,7 +395,6 @@ class SabotageEngine:
                 self._deadline = None
                 self.advance()
                 await self._notify()
-            # The game just ended: persist the team scores exactly once.
             if self._on_finish is not None:
                 await self._on_finish()
         except asyncio.CancelledError:
@@ -406,9 +411,8 @@ class SabotageEngine:
         self._wake.set()
         await self._notify()
 
-    # ─── pause / resume, mirroring the main engine ───────────────────────────
+    # --- pause / resume, mirroring the main engine ---
     def pause(self) -> None:
-        """Freeze the current phase's remaining time."""
         if self.paused or self.phase in ("setup", "done"):
             return
         if self._deadline is not None:
@@ -423,7 +427,7 @@ class SabotageEngine:
             return
         self.paused = False
         if self.phase not in ("setup", "done"):
-            self._deadline = time.monotonic() + (self._remaining or cfg.TIMINGS.get(self.phase, 5))
+            self._deadline = time.monotonic() + (self._remaining or self._duration())
         if self._wake is not None:
             self._wake.set()
 
@@ -453,13 +457,13 @@ class SabotageRegistry:
 sabotages = SabotageRegistry()
 
 
-# ─── routes ──────────────────────────────────────────────────────────────────
+# --- routes -------------------------------------------------------------------
 from fastapi import APIRouter, Depends, HTTPException  # noqa: E402
 from pydantic import BaseModel  # noqa: E402
 from sqlalchemy import select  # noqa: E402
 from sqlalchemy.ext.asyncio import AsyncSession  # noqa: E402
 
-from app.auth import Claims, require_admin, require_player  # noqa: E402
+from app.auth import require_admin, require_player  # noqa: E402
 from app.database import SessionLocal, get_session  # noqa: E402
 from app.engine import Phase  # noqa: E402
 from app.manager import manager  # noqa: E402
@@ -471,10 +475,9 @@ router = APIRouter(prefix="/sabotage", tags=["sabotage"])
 def _wire(code: str, engine: SabotageEngine) -> None:
     """Wire a room's broadcast and the end-of-game score write, once each."""
     if not engine._wired:
+
         async def broadcast_sabotage() -> None:
-            await manager.broadcast_to(
-                code, {"type": "sabotage", "payload": engine.snapshot()}
-            )
+            await manager.broadcast_to(code, {"type": "sabotage", "payload": engine.snapshot()})
 
         engine.subscribe(broadcast_sabotage)
         engine._wired = True
@@ -482,8 +485,7 @@ def _wire(code: str, engine: SabotageEngine) -> None:
     async def settle_scores() -> None:
         """Persist each player's team score into `scores.sabotage_score`.
 
-        Every competing member of a team shares the team total, so the write is
-        the same value for everyone on a side. Players never report it
+        Every member of a team shares the team total. Players never report it
         themselves: the engine computes it and this callback lands it.
         """
         async with SessionLocal() as session:
@@ -508,8 +510,8 @@ async def auto_start_sabotage(code: str, main_engine) -> bool:
 
     Called from the room's broadcast listener on every state change, so it must
     be idempotent: it only acts when the flow is playing the sabotage node and
-    the sabotage engine is still in `setup`. Teams are assigned randomly if the
-    host has not done it, so the whole task runs with zero operator input.
+    the sabotage engine is still in `setup`. Teams are drawn here, at the intro,
+    so the first thing each player sees is which side they are on.
 
     A room with a single player cannot field two teams. Rather than parking the
     show on a node nobody can play for its full slot, that player is paid
@@ -534,8 +536,6 @@ async def auto_start_sabotage(code: str, main_engine) -> bool:
         red: set[int] = set()
         blue: set[int] = set()
         if solo:
-            # No teams at all: there is nobody to put on the other side, and a
-            # leftover side on the player would only confuse the screens.
             await _pay_solo(session, players[0])
         else:
             ids = [player.id for player in players]
@@ -551,8 +551,6 @@ async def auto_start_sabotage(code: str, main_engine) -> bool:
         await session.commit()
 
     if solo:
-        # Outside the session on purpose: advancing the flow re-enters this
-        # listener, which opens a session of its own.
         await _skip_sabotage_node(main_engine)
         return False
     if not red or not blue:
@@ -567,7 +565,7 @@ async def auto_start_sabotage(code: str, main_engine) -> bool:
 
 
 async def _pay_solo(session: AsyncSession, player: Player) -> None:
-    """Pay a lone player the perfect winning score.
+    """Pay a lone player the best score a team can reach.
 
     Setting the column rather than adding to it keeps this idempotent: the
     listener runs again on every state change while the flow is on this node.
@@ -589,7 +587,7 @@ async def _skip_sabotage_node(main_engine) -> None:
 
 
 class VoteBody(BaseModel):
-    card: str
+    cards: list[str]
 
 
 def _engine(code: str) -> SabotageEngine:
@@ -605,12 +603,7 @@ def _engine(code: str) -> SabotageEngine:
     dependencies=[Depends(require_admin)],
 )
 async def start_sabotage(code: str, session: AsyncSession = Depends(get_session)) -> dict:
-    """Snapshot the room's Red/Blue split into the engine and begin the reveal.
-
-    The teams come from `players.team`, set by the teams/assign endpoint. A
-    player with no team yet simply does not play, and starting refuses unless
-    both sides have at least one player.
-    """
+    """Snapshot the room's Red/Blue split into the engine and begin the reveal."""
     rows = (await session.execute(select(Player).where(Player.room_code == code))).scalars().all()
     teams: dict[str, set[int]] = {"red": set(), "blue": set()}
     for player in rows:
@@ -628,7 +621,7 @@ async def start_sabotage(code: str, session: AsyncSession = Depends(get_session)
     return engine.snapshot()
 
 
-@router.post("/{code}/vote", summary="Cast or change this player's card choice")
+@router.post("/{code}/vote", summary="Set this player's cards for the round")
 async def vote(
     code: str,
     body: VoteBody,
@@ -638,10 +631,19 @@ async def vote(
     if player.room_code != code:
         raise HTTPException(status_code=409, detail=f"not in room: {code}")
     try:
-        engine.cast_vote(player.id, body.card)
+        engine.cast_vote(player.id, body.cards)
     except SabotageError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
-    return {"card": body.card, "state": engine.snapshot()}
+    return {"cards": body.cards, "state": engine.snapshot()}
+
+
+@router.get("/{code}/team", summary="This player's own side of the current round")
+async def team_view(code: str, player: Player = Depends(require_player)) -> dict:
+    engine = _engine(code)
+    team = next((side for side in TEAMS if player.id in engine.teams[side]), None)
+    if team is None:
+        raise HTTPException(status_code=409, detail="player has no team")
+    return engine.team_view(team)
 
 
 @router.get("/{code}/state", summary="The current Sabotage moment")

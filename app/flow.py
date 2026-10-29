@@ -100,7 +100,9 @@ ROUND_FLOW: list[dict] = [
         # The Sabotage engine runs its own clock (~2.5 minutes plus tie-break
         # headroom) and broadcasts it over WS; this node only holds the slot
         # in the main flow for as long as the game needs.
-        "duration_sec": 170,
+        # Sabotage v2 runs its own ~3.5 minute clock (8s draw + 20s rules +
+        # 4 x (select + reveal) + final); this slot only has to be long enough.
+        "duration_sec": 225,
         "score": "sabotage",
     },
     {

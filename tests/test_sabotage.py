@@ -1,18 +1,20 @@
-"""The Sabotage engine: votes, ties, budget, the spent deck and scoring.
+"""The Sabotage v2 engine: card vectors, voting aggregation, scoring, clock.
 
 Engine logic is tested synchronously by calling `advance()` directly, so a
 whole show can be played through instantly. The API layer is tested separately
 and only exercises the thin shell around this state machine.
 """
 
+from itertools import combinations
+
 import pytest
 from httpx import ASGITransport, AsyncClient
 
 from app import sabotage_config as cfg
 from app.auth import ADMIN_SUBJECT, SCOPE_FULL, create_token
-from app.main import app
 from app.flow import ROUND_FLOW
-from app.sabotage import SabotageEngine, SabotageError, sabotages
+from app.main import app
+from app.sabotage import SabotageEngine, SabotageError, aggregate, sabotages
 
 # Derived, not hardcoded: inserting a node into the rundown used to break these
 # tests with an index that pointed at whatever had taken the old slot.
@@ -25,196 +27,339 @@ def make_engine(code: str = "sab-eng") -> SabotageEngine:
     return engine
 
 
-def vote_team(engine: SabotageEngine, team: str, card: str) -> None:
-    for player_id in engine.teams[team]:
-        engine.cast_vote(player_id, card)
+def best_target(deck: list[str], target: str) -> int:
+    """The strongest target column a side can afford, by exhaustion."""
+    index = cfg.DOMAINS.index(target)
+    best = 0
+    for size in range(1, cfg.MAX_CARDS + 1):
+        for combo in combinations(deck, size):
+            if cfg.cost_of(combo) > cfg.BUDGET:
+                continue
+            best = max(best, cfg.vector_of(combo)[index])
+    return best
 
 
-# ─── engine: scoring matrix ──────────────────────────────────────────────────
-def test_blocked_credits_the_defender_only() -> None:
+# --- balance ------------------------------------------------------------------
+def test_every_round_keeps_the_one_point_margin() -> None:
+    """The attacker is exactly one point ahead when both sides play optimally.
+
+    One point is the whole design: spend badly and you do not break through,
+    waste a slot on a distraction and the defence holds.
+    """
+    for index, spec in enumerate(cfg.ROUNDS):
+        attack = best_target(cfg.cards_for(index, "attacker"), spec["target"])
+        defence = best_target(cfg.cards_for(index, "defender"), spec["target"])
+        assert attack == defence + 1, f"round {spec['round']} is {attack} vs {defence}"
+
+
+def test_each_team_attacks_twice() -> None:
+    """An unbalanced schedule would decide the match before anyone plays: the
+    attacker holds the one-point advantage, so whoever attacks more wins."""
+    attacks = [spec["attacker"] for spec in cfg.ROUNDS]
+    assert attacks.count("red") == len(cfg.ROUNDS) // 2
+    assert attacks.count("blue") == len(cfg.ROUNDS) // 2
+
+
+def test_the_three_targets_all_appear() -> None:
+    targets = {spec["target"] for spec in cfg.ROUNDS}
+    assert targets == set(cfg.DOMAINS)
+
+
+def test_every_card_is_used_by_exactly_one_round() -> None:
+    used = [card for spec in cfg.ROUNDS for card in spec["attack"] + spec["defence"]]
+    assert len(used) == len(set(used))
+    assert set(used) == set(cfg.CARDS)
+
+
+def test_vectors_stay_inside_the_scale() -> None:
+    for card in cfg.CARDS.values():
+        assert len(card["vector"]) == 3
+        assert all(0 <= value <= 3 for value in card["vector"]), card["name"]
+
+
+def test_price_is_not_a_power_ranking() -> None:
+    """Every deck must hold a pair where the dearer card is no stronger on the
+    round's target, or players would just buy the most expensive thing they can
+    afford and the budget would stop being a decision."""
+    for index, spec in enumerate(cfg.ROUNDS):
+        target_index = cfg.DOMAINS.index(spec["target"])
+        for role in ("attacker", "defender"):
+            deck = cfg.cards_for(index, role)
+            inversion = any(
+                cfg.CARDS[a]["cost"] > cfg.CARDS[b]["cost"]
+                and cfg.CARDS[a]["vector"][target_index] <= cfg.CARDS[b]["vector"][target_index]
+                for a in deck
+                for b in deck
+            )
+            assert inversion, f"round {spec['round']} {role} has no price inversion"
+
+
+# --- scoring ------------------------------------------------------------------
+def test_scoring_rows_always_sum_to_the_same_pool() -> None:
+    for attack_points, defence_points in cfg.POINTS.values():
+        assert attack_points + defence_points == 600
+
+
+def test_a_breakthrough_always_scores_more_than_a_held_round() -> None:
+    """The side that wins the round must also score more, or "won the round but
+    lost the points" reads as a broken rule."""
+    worst_break = min(points[0] for broke, flanks in cfg.POINTS if broke for points in [cfg.POINTS[(broke, flanks)]])
+    best_hold = max(cfg.POINTS[(False, flanks)][0] for flanks in (0, 1, 2))
+    assert worst_break > best_hold
+
+
+def test_the_design_review_example() -> None:
+    """Attacker D5 P2 I6 against defence D4 P5 I6.
+
+    Same two builds, two rounds, two different stories - which is the whole
+    point of binding the target to the scenario.
+    """
+    attack = (5, 2, 6)
+    defence = (4, 5, 6)
+
+    on_data = cfg.score_round(attack, defence, cfg.DATA)
+    assert on_data["broke_target"] is True
+    assert on_data["flanks"] == 0
+    assert (on_data["attack_points"], on_data["defence_points"]) == (320, 280)
+
+    on_people = cfg.score_round(attack, defence, cfg.PEOPLE)
+    assert on_people["broke_target"] is False
+    assert on_people["flanks"] == 1
+    assert (on_people["attack_points"], on_people["defence_points"]) == (120, 480)
+
+
+def test_a_tie_holds_the_line() -> None:
+    """The defender does not have to outspend the attack, only match it."""
+    result = cfg.score_round((6, 0, 0), (6, 0, 0), cfg.DATA)
+    assert result["broke_target"] is False
+    assert result["dims"][0]["result"] == "tie"
+
+
+def test_every_flank_counts() -> None:
+    result = cfg.score_round((9, 9, 9), (0, 0, 0), cfg.DATA)
+    assert result["flanks"] == 2
+    assert result["outcome"] == "Total compromise"
+    assert (result["attack_points"], result["defence_points"]) == (600, 0)
+
+
+# --- voting aggregation -------------------------------------------------------
+def test_the_most_voted_cards_are_bought() -> None:
+    deck = cfg.cards_for(0, "attacker")
+    chosen, dropped = aggregate(
+        {1: ["cloned_login_page", "urgent_deadline"], 2: ["cloned_login_page"]},
+        deck,
+        cfg.DATA,
+    )
+    assert "cloned_login_page" in chosen
+    assert dropped == []
+
+
+def test_a_tie_is_broken_by_target_strength_not_by_price() -> None:
+    """Breaking a tie on price would reward voting for expensive cards, and the
+    budget would drain before the target is covered."""
+    deck = cfg.cards_for(0, "attacker")
+    # One vote each: the cloned page (data 3) must beat the dearer attachment
+    # (data 2) even though the attachment costs more.
+    chosen, _ = aggregate(
+        {1: ["cloned_login_page"], 2: ["malicious_attachment"]}, deck, cfg.DATA
+    )
+    assert chosen[0] == "cloned_login_page"
+
+
+def test_a_card_that_does_not_fit_is_skipped() -> None:
+    deck = cfg.cards_for(0, "attacker")
+    # 42 + 42 is over budget: the second copy of the attachment (as a vote from
+    # another player) must not be bought, and a cheaper card takes the slot.
+    chosen, dropped = aggregate(
+        {
+            1: ["malicious_attachment", "personalised_context"],
+            2: ["cloned_login_page", "malicious_attachment"],
+            3: ["urgent_deadline"],
+        },
+        deck,
+        cfg.DATA,
+    )
+    assert cfg.cost_of(chosen) <= cfg.BUDGET
+    assert len(chosen) <= cfg.MAX_CARDS
+    assert all(entry["reason"] in ("budget", "slots") for entry in dropped)
+
+
+def test_the_four_card_limit_is_respected() -> None:
+    deck = cfg.cards_for(1, "attacker")
+    chosen, _ = aggregate(
+        {1: ["urgent_wire", "authority_pressure", "lookalike_domain", "check_domain"]},
+        deck,
+        cfg.PEOPLE,
+    )
+    assert len(chosen) <= cfg.MAX_CARDS
+
+
+def test_a_silent_team_still_gets_a_build() -> None:
+    """Nobody voting must not hand a team a zero: the engine fills the hand."""
+    deck = cfg.cards_for(0, "attacker")
+    chosen, _ = aggregate({}, deck, cfg.DATA)
+    assert chosen
+    assert cfg.cost_of(chosen) <= cfg.BUDGET
+
+
+# --- votes --------------------------------------------------------------------
+def test_a_card_outside_the_rounds_deck_is_refused() -> None:
     engine = make_engine()
     engine.start()
-    engine.advance()  # -> attack (red)
-    engine.attack_card = "deepfake_video"
-    engine.defence_card = "verify_independently"
-    engine._apply_outcome()
-    # blocked: defender success, attacker zero.
-    assert engine.scores["red"] == 0
-    assert engine.scores["blue"] == cfg.DEFENCE_CARDS["verify_independently"]["success"]
+    engine.advance()  # team_reveal -> brief
+    engine.advance()  # brief -> select
+    with pytest.raises(SabotageError):
+        engine.cast_vote(1, ["prompt_injection"])
 
 
-def test_failed_credits_the_attacker_and_penalises_the_defender() -> None:
+def test_an_over_budget_hand_is_refused() -> None:
     engine = make_engine()
     engine.start()
     engine.advance()
-    engine.attack_card = "ai_agent_attack"
-    engine.defence_card = "investigate_further"
-    engine._apply_outcome()
-    assert engine.scores["red"] == cfg.ATTACK_CARDS["ai_agent_attack"]["success"]
-    assert engine.scores["blue"] == cfg.DEFENCE_CARDS["investigate_further"]["fail"]
+    engine.advance()
+    with pytest.raises(SabotageError):
+        engine.cast_vote(
+            1,
+            ["malicious_attachment", "cloned_login_page", "spoofed_sender", "personalised_context"],
+        )
 
 
-def test_partial_credits_neither_side() -> None:
+def test_more_than_four_cards_is_refused() -> None:
     engine = make_engine()
     engine.start()
     engine.advance()
-    engine.attack_card = "personalised_message"
-    engine.defence_card = "verify_independently"
-    engine._apply_outcome()
-    assert engine.scores["red"] == 0
-    assert engine.scores["blue"] == 0
+    engine.advance()
+    with pytest.raises(SabotageError):
+        engine.cast_vote(
+            1,
+            ["urgent_deadline", "personalised_context", "spoofed_sender", "cloned_login_page", "malicious_attachment"],
+        )
 
 
-def test_every_attack_has_a_blocking_defence_and_matrix_is_complete() -> None:
-    defences = set(cfg.DEFENCE_CARDS)
-    for attack, row in cfg.EFFECT_MATRIX.items():
-        assert attack in cfg.ATTACK_CARDS
-        assert set(row) == defences, f"{attack} matrix does not cover every defence"
-        assert "blocked" in row.values(), f"{attack} has no blocking defence"
-    # Continue Carefully never blocks anything.
-    for row in cfg.EFFECT_MATRIX.values():
-        assert row["continue_carefully"] != "blocked"
+def test_votes_are_only_open_while_selecting() -> None:
+    engine = make_engine()
+    engine.start()
+    assert engine.phase == "team_reveal"
+    with pytest.raises(SabotageError):
+        engine.cast_vote(1, ["cloned_login_page"])
 
 
-# ─── engine: the full three rounds ───────────────────────────────────────────
-def test_a_full_show_runs_three_rounds_and_finishes() -> None:
+# --- the show -----------------------------------------------------------------
+def test_a_full_show_runs_four_rounds_and_finishes() -> None:
     engine = make_engine()
     engine.start()
     assert engine.phase == "team_reveal"
 
-    engine.advance()  # reveal -> r1 attack (red)
-    assert engine.phase == "attack" and engine._attacker() == "red"
-    vote_team(engine, "red", "personalised_message")
-    engine.advance()  # settle -> defend (blue)
-    assert engine.phase == "defend"
-    vote_team(engine, "blue", "verify_independently")
-    engine.advance()  # settle -> resolve
-    assert engine.phase == "resolve"
-    engine.advance()  # -> r2 attack (blue)
-    assert engine.round == 2 and engine._attacker() == "blue"
+    engine.advance()
+    assert engine.phase == "brief"
+    engine.advance()
 
-    vote_team(engine, "blue", "cloned_voice")
-    engine.advance()
-    vote_team(engine, "red", "stop_the_action")
-    engine.advance()
-    engine.advance()  # -> r3 attack (red)
-    assert engine.round == 3
+    for round_index in range(len(cfg.ROUNDS)):
+        assert engine.phase == "select", f"round {round_index + 1}"
+        assert engine.round == round_index
+        spec = engine.round_spec()
+        # Both sides vote for their strongest affordable hand.
+        for team in ("red", "blue"):
+            deck = engine.deck_for(team)
+            index = cfg.DOMAINS.index(spec["target"])
+            picks = sorted(deck, key=lambda c: -cfg.CARDS[c]["vector"][index])
+            hand: list[str] = []
+            for card in picks:
+                if len(hand) < cfg.MAX_CARDS and cfg.cost_of(hand + [card]) <= cfg.BUDGET:
+                    hand.append(card)
+            for player_id in engine.teams[team]:
+                engine.cast_vote(player_id, hand)
+        engine.advance()  # select -> reveal
+        assert engine.phase == "reveal"
+        assert engine.last_result is not None
+        assert len(engine.history) == round_index + 1
+        engine.advance()
 
-    vote_team(engine, "red", "ai_agent_attack")
+    assert engine.phase == "final"
+    assert engine.round == len(cfg.ROUNDS) - 1
+    # Four rounds of a 600-point pool: nothing is created or destroyed.
+    assert engine.scores["red"] + engine.scores["blue"] == 600 * len(cfg.ROUNDS)
+    assert engine.rounds_won["red"] + engine.rounds_won["blue"] == len(cfg.ROUNDS)
+
     engine.advance()
-    vote_team(engine, "blue", "continue_carefully")
-    engine.advance()
-    engine.advance()  # resolve -> team_result
-    assert engine.phase == "team_result"
-    engine.advance()  # -> payout
-    assert engine.phase == "payout"
-    engine.advance()  # -> done
     assert engine.phase == "done"
-    # Three attacks were played, three spent, three remain.
-    assert len(engine.spent) == 3
 
 
-def test_attacks_are_spent_globally_after_use() -> None:
-    engine = make_engine()
-    engine.start()
-    engine.advance()  # r1 attack (red)
-    vote_team(engine, "red", "deepfake_video")
-    engine.advance()  # settle -> defend
-    assert "deepfake_video" in engine.spent
-    assert "deepfake_video" not in engine._attack_options()
-
-    # Round 2: Blue attacks and cannot pick the card Red already used.
-    vote_team(engine, "blue", "continue_carefully")
-    engine.advance()
-    engine.advance()  # -> r2 attack (blue)
-    assert "deepfake_video" not in engine._attack_options()
-    with pytest.raises(SabotageError):
-        engine.cast_vote(3, "deepfake_video")
+def test_the_first_round_gets_the_longest_clock() -> None:
+    """Round one is also the tutorial, so it gets more time than the rest."""
+    assert cfg.TIMINGS["select_first"] > cfg.TIMINGS["select"]
 
 
-# ─── engine: budget ──────────────────────────────────────────────────────────
-def test_a_card_the_team_cannot_afford_is_refused() -> None:
-    engine = make_engine()
-    engine.start()
-    engine.budgets = {"red": 5_000, "blue": 5_000}
-    engine.advance()  # attack (red)
-    # The cheapest attack is 10k, so nothing is affordable.
-    assert engine._attack_options() == []
-    with pytest.raises(SabotageError):
-        engine.cast_vote(1, "ai_written_message")
-
-
-def test_affordable_defence_costs_are_deducted_once() -> None:
+def test_no_build_is_public_while_selecting() -> None:
+    """Both sides commit at the same time. If the broadcast carried a live
+    build, the other team would read it and the round would become a copy of
+    whoever moved last."""
     engine = make_engine()
     engine.start()
     engine.advance()
-    vote_team(engine, "red", "deepfake_video")
-    engine.advance()  # defend (blue), budget still 100k
-    vote_team(engine, "blue", "verify_independently")
-    engine.advance()  # settle defence
-    assert engine.budgets["blue"] == cfg.STARTING_BUDGET - cfg.DEFENCE_CARDS["verify_independently"]["cost"]
+    engine.advance()
+    engine.cast_vote(1, ["cloned_login_page"])
+    snapshot = engine.snapshot()
+    assert snapshot["phase"] == "select"
+    assert snapshot["target"] == cfg.DATA
+    assert snapshot["builds"] == {}
+    assert snapshot["vectors"] == {}
+    assert snapshot["votes"] == {}
 
 
-# ─── engine: voting and ties ─────────────────────────────────────────────────
-def test_only_the_acting_team_can_vote() -> None:
-    engine = make_engine()
-    engine.start()
-    engine.advance()  # attack (red)
-    with pytest.raises(SabotageError):
-        engine.cast_vote(3, "deepfake_video")  # blue player during red's attack
-
-
-def test_a_tie_revotes_among_the_tied_cards_then_breaks() -> None:
-    engine = make_engine()
-    engine.start()
-    engine.advance()  # attack (red), two players
-    # Split the vote: a tie between two cards.
-    engine.cast_vote(1, "deepfake_video")
-    engine.cast_vote(2, "cloned_voice")
-    engine.advance()  # settle -> tie_break
-    assert engine.phase == "tie_break"
-    assert set(engine.tie_candidates) == {"deepfake_video", "cloned_voice"}
-
-    # Only the tied cards are acceptable during the revote.
-    with pytest.raises(SabotageError):
-        engine.cast_vote(1, "ai_agent_attack")
-
-    engine.cast_vote(1, "cloned_voice")
-    engine.cast_vote(2, "cloned_voice")
-    engine.advance()  # break tie -> defend
-    assert engine.phase == "defend"
-    assert engine.attack_card == "cloned_voice"
-    assert engine.attack_card in engine.spent
-
-
-def test_a_tie_that_never_breaks_picks_the_cheapest_card() -> None:
+def test_a_team_sees_its_own_build_only() -> None:
     engine = make_engine()
     engine.start()
     engine.advance()
-    engine.cast_vote(1, "deepfake_video")  # 30k
-    engine.cast_vote(2, "ai_written_message")  # 10k
-    engine.advance()  # -> tie_break
-    assert engine.phase == "tie_break"
-    # Nobody votes again; the revote ends and picks the cheaper card.
     engine.advance()
-    assert engine.phase == "defend"
-    assert engine.attack_card == "ai_written_message"
+    engine.cast_vote(1, ["cloned_login_page"])
+    red = engine.team_view("red")
+    blue = engine.team_view("blue")
+    assert red["build"] == ["cloned_login_page"]
+    assert red["budget"] == cfg.BUDGET - cfg.CARDS["cloned_login_page"]["cost"]
+    assert red["role"] == "attacker"
+    assert blue["build"] == []
+    assert blue["role"] == "defender"
 
 
-# ─── engine: payout ──────────────────────────────────────────────────────────
-def test_the_winner_gets_the_bonus() -> None:
+def test_the_snapshot_carries_the_round_table() -> None:
     engine = make_engine()
     engine.start()
-    engine.scores = {"red": 900, "blue": 300}
-    engine.round = 3
-    engine.phase = "team_result"
-    engine._apply_payout()
-    assert engine.scores["red"] == 900 + cfg.WINNER_BONUS
-    assert engine.scores["blue"] == 300
-    assert engine.phase == "payout"
+    snapshot = engine.snapshot()
+    assert snapshot["rounds"] == len(cfg.ROUNDS)
+    assert snapshot["target"] == cfg.ROUNDS[0]["target"]
+    assert snapshot["decks"]["red"] == cfg.cards_for(0, "attacker")
+    assert snapshot["decks"]["blue"] == cfg.cards_for(0, "defender")
 
 
-# ─── API shell ───────────────────────────────────────────────────────────────
+# --- pause / resume -----------------------------------------------------------
+def test_pause_freezes_the_clock_and_resume_restores_it() -> None:
+    engine = make_engine()
+    engine.start()
+
+    engine.pause()
+    assert engine.paused is True
+    assert engine._deadline is None
+    assert engine._remaining > 0
+    assert engine.snapshot()["paused"] is True
+    assert engine.snapshot()["remaining_ms"] > 0
+
+    engine.resume()
+    assert engine.paused is False
+    assert engine._deadline is not None
+
+
+def test_a_paused_show_refuses_votes() -> None:
+    engine = make_engine()
+    engine.start()
+    engine.advance()
+    engine.advance()
+    engine.pause()
+    with pytest.raises(SabotageError):
+        engine.cast_vote(1, ["cloned_login_page"])
+
+
+# --- API shell ----------------------------------------------------------------
 @pytest.fixture
 async def client():
     transport = ASGITransport(app=app)
@@ -245,7 +390,7 @@ async def test_start_refuses_when_a_team_is_empty(
     sabotages.remove("sab-empty")
 
 
-async def test_start_enters_the_reveal(client: AsyncClient, admin_headers: dict) -> None:
+async def test_start_opens_with_the_team_draw(client: AsyncClient, admin_headers: dict) -> None:
     await client.post("/api/rooms", json={"code": "sab-start"}, headers=admin_headers)
     for name in ("One", "Two", "Three", "Four"):
         headers, _ = await _login(client, name)
@@ -263,13 +408,13 @@ async def test_start_enters_the_reveal(client: AsyncClient, admin_headers: dict)
     # Voting is not open yet, so a player vote is refused.
     player, _ = await _login(client, "One")
     voted = await client.post(
-        "/api/sabotage/sab-start/vote", json={"card": "deepfake_video"}, headers=player
+        "/api/sabotage/sab-start/vote", json={"cards": ["cloned_login_page"]}, headers=player
     )
     assert voted.status_code == 409
     sabotages.remove("sab-start")
 
 
-async def test_vote_accepts_the_acting_teams_choice(
+async def test_vote_accepts_a_hand_from_the_players_own_deck(
     client: AsyncClient, admin_headers: dict
 ) -> None:
     await client.post("/api/rooms", json={"code": "sab-vote"}, headers=admin_headers)
@@ -280,63 +425,37 @@ async def test_vote_accepts_the_acting_teams_choice(
     await client.post("/api/rooms/sab-vote/teams/assign", headers=admin_headers)
     await client.post("/api/sabotage/sab-vote/start", headers=admin_headers)
 
-    # Move the engine to the first attack phase synchronously.
     engine = sabotages.get("sab-vote")
     assert engine is not None
-    engine.advance()  # reveal -> attack (red)
+    engine.advance()  # team_reveal -> brief
+    engine.advance()  # brief -> select
 
-    # Red players are ids 1 and 2 after the deterministic split.
+    red_name = next(name for name, (_, pid) in players.items() if pid in engine.teams["red"])
     voted = await client.post(
-        "/api/sabotage/sab-vote/vote", json={"card": "personalised_message"}, headers=players["One"][0]
+        "/api/sabotage/sab-vote/vote",
+        json={"cards": ["cloned_login_page", "urgent_deadline"]},
+        headers=players[red_name][0],
     )
     assert voted.status_code == 200
-    assert voted.json()["card"] == "personalised_message"
-    assert engine.votes[players["One"][1]] == "personalised_message"
+    player_id = players[red_name][1]
+    assert engine.votes[player_id] == ["cloned_login_page", "urgent_deadline"]
 
-    # A blue player cannot vote during red's attack. After the alternating
-    # split, ids 2 and 4 are Blue, so "Two" is on the defending side.
-    blue = await client.post(
-        "/api/sabotage/sab-vote/vote", json={"card": "deepfake_video"}, headers=players["Two"][0]
+    blue_name = next(name for name, (_, pid) in players.items() if pid in engine.teams["blue"])
+    refused = await client.post(
+        "/api/sabotage/sab-vote/vote",
+        json={"cards": ["prompt_injection"]},
+        headers=players[blue_name][0],
     )
-    assert blue.status_code == 409
+    assert refused.status_code == 409
     sabotages.remove("sab-vote")
 
 
 async def test_vote_requires_a_player_token(client: AsyncClient, admin_headers: dict) -> None:
     await client.post("/api/rooms", json={"code": "sab-auth"}, headers=admin_headers)
     await client.post("/api/sabotage/sab-auth/start", headers=admin_headers)
-    response = await client.post(
-        "/api/sabotage/sab-auth/vote", json={"card": "deepfake_video"}
-    )
+    response = await client.post("/api/sabotage/sab-auth/vote", json={"cards": []})
     assert response.status_code == 401
     sabotages.remove("sab-auth")
-
-
-# ─── pause / resume, mirroring the main engine ───────────────────────────────
-def test_pause_freezes_the_clock_and_resume_restores_it() -> None:
-    engine = make_engine()
-    engine.start()
-    assert engine.phase == "team_reveal"
-
-    engine.pause()
-    assert engine.paused is True
-    assert engine._deadline is None
-    assert engine._remaining > 0
-    assert engine.snapshot()["paused"] is True
-    assert engine.snapshot()["remaining_ms"] > 0
-
-    engine.resume()
-    assert engine.paused is False
-    assert engine._deadline is not None
-
-
-def test_a_paused_show_refuses_votes() -> None:
-    engine = make_engine()
-    engine.start()
-    engine.advance()  # -> attack (red)
-    engine.pause()
-    with pytest.raises(SabotageError):
-        engine.cast_vote(1, "deepfake_video")
 
 
 async def test_pausing_the_room_pauses_sabotage(
@@ -353,7 +472,6 @@ async def test_pausing_the_room_pauses_sabotage(
     started = await client.post("/api/sabotage/sab-pause/start", headers=admin_headers)
     assert started.status_code == 200
 
-    # Drive the show into playing and pause it; Sabotage must freeze with it.
     await client.post("/api/rooms/sab-pause/start", headers=admin_headers)
     paused = await client.post("/api/rooms/sab-pause/pause", headers=admin_headers)
     assert paused.status_code == 200
@@ -372,8 +490,8 @@ async def test_pausing_the_room_pauses_sabotage(
     sabotages.remove("sab-pause")
 
 
-# ─── M5: auto-start and score settlement ─────────────────────────────────────
-async def test_auto_start_when_the_flow_reaches_the_sabotage_node(
+# --- auto-start and settlement ------------------------------------------------
+async def test_auto_start_draws_the_teams_at_the_intro(
     client: AsyncClient, admin_headers: dict
 ) -> None:
     from sqlalchemy import select
@@ -388,14 +506,13 @@ async def test_auto_start_when_the_flow_reaches_the_sabotage_node(
         headers, _ = await _login(client, name)
         await client.post("/api/rooms/sab-auto/join", headers=headers)
 
-    # The main flow lands on the Sabotage node and the broadcast listener
-    # starts the game.
     engine = rooms.get("sab-auto")
     assert engine is not None
     await engine.go_to(SABOTAGE_INDEX)
 
     sab = sabotages.get("sab-auto")
     assert sab is not None
+    # The draw is the first thing the players see: no earlier phase.
     assert sab.phase == "team_reveal"
 
     async with SessionLocal() as session:
@@ -409,13 +526,10 @@ async def test_auto_start_when_the_flow_reaches_the_sabotage_node(
     sabotages.remove("sab-auto")
 
 
-async def test_every_jump_back_to_node_5_reassigns_teams(
+async def test_every_jump_back_to_the_node_is_a_new_draw(
     client: AsyncClient, admin_headers: dict
 ) -> None:
-    """The operator rehearses by jumping away and back: each landing on the
-    Sabotage node is a brand new game, teams re-assigned fresh."""
     from app.rooms import rooms
-    from app.sabotage import sabotages
 
     await client.post("/api/rooms", json={"code": "sab-rejump"}, headers=admin_headers)
     for name in ("One", "Two"):
@@ -425,33 +539,19 @@ async def test_every_jump_back_to_node_5_reassigns_teams(
     engine = rooms.get("sab-rejump")
     assert engine is not None
 
-    # First landing (via the operator's jump endpoint): a fresh game.
     await client.post(f"/api/rooms/sab-rejump/go/{SABOTAGE_INDEX}", headers=admin_headers)
     first = sabotages.get("sab-rejump")
     assert first is not None
     assert first.phase == "team_reveal"
 
-    # Jump away, then back: the previous game is discarded and teams re-roll.
     await client.post("/api/rooms/sab-rejump/go/0", headers=admin_headers)
     assert sabotages.get("sab-rejump") is None
 
     await client.post(f"/api/rooms/sab-rejump/go/{SABOTAGE_INDEX}", headers=admin_headers)
     second = sabotages.get("sab-rejump")
     assert second is not None
-    assert second is not first  # a new engine, not the resumed one
+    assert second is not first
     assert second.phase == "team_reveal"
-
-    from app.database import SessionLocal
-    from sqlalchemy import select
-
-    from app.models import Player
-
-    async with SessionLocal() as session:
-        players = (
-            await session.execute(select(Player).where(Player.room_code == "sab-rejump"))
-        ).scalars().all()
-        teams = {player.team for player in players}
-        assert teams == {"red", "blue"}
 
     await engine.finish()
     sabotages.remove("sab-rejump")
@@ -473,8 +573,6 @@ async def test_a_solo_room_is_paid_and_the_game_is_skipped(
     assert engine is not None
     await engine.go_to(SABOTAGE_INDEX)
 
-    # One player cannot field two teams: no game runs, and the flow has already
-    # moved past the node instead of waiting out its 170-second slot.
     assert sabotages.get("sab-solo") is None
     assert engine.index == SABOTAGE_INDEX + 1
     assert (engine._node() or {}).get("game") != "sabotage"
@@ -485,7 +583,6 @@ async def test_a_solo_room_is_paid_and_the_game_is_skipped(
         assert score.sabotage_score == cfg.SOLO_SCORE
         player = await session.get(Player, player_id)
         assert player is not None
-        # A skipped game assigns nobody a side.
         assert player.team is None
 
     await engine.finish()
@@ -510,8 +607,6 @@ async def test_finish_persists_each_members_team_score(
     engine = sabotages.ensure("sab-settle")
     engine.teams = {"red": {ids["One"], ids["Two"]}, "blue": {ids["Three"], ids["Four"]}}
 
-    # The engine reads the teams from the database when it settles, so write
-    # the same split back to the rows.
     async with SessionLocal() as session:
         rows = (
             await session.execute(select(Player).where(Player.room_code == "sab-settle"))
@@ -533,3 +628,19 @@ async def test_finish_persists_each_members_team_score(
             assert score.sabotage_score == engine.scores[team]
 
     sabotages.remove("sab-settle")
+
+
+def test_the_flow_slot_is_long_enough_for_the_game() -> None:
+    """The engine runs its own clock; this node only guards the slot."""
+    from app.flow import ROUND_FLOW
+
+    node = next(node for node in ROUND_FLOW if node.get("game") == "sabotage")
+    game_total = (
+        cfg.TIMINGS["team_reveal"]
+        + cfg.TIMINGS["brief"]
+        + cfg.TIMINGS["select_first"]
+        + cfg.TIMINGS["select"] * (len(cfg.ROUNDS) - 1)
+        + cfg.TIMINGS["reveal"] * len(cfg.ROUNDS)
+        + cfg.TIMINGS["final"]
+    )
+    assert node["duration_sec"] >= game_total
