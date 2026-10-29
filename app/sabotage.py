@@ -96,22 +96,6 @@ def aggregate(
         chosen.append(card)
         spent += cost
 
-    if not chosen and fill:
-        # Nobody voted, or nothing voted for was affordable. Fall back to the
-        # strongest affordable hand on the target so a team that stayed quiet
-        # is not handed a zero by accident. `fill=False` while the phase is
-        # still open: an auto-filled preview would tell the team it had already
-        # decided something.
-        for card in sorted(
-            deck,
-            key=lambda card: (-cfg.CARDS[card]["vector"][target_index], cfg.CARDS[card]["cost"]),
-        ):
-            cost = cfg.CARDS[card]["cost"]
-            if len(chosen) >= cfg.MAX_CARDS or spent + cost > cfg.BUDGET:
-                continue
-            chosen.append(card)
-            spent += cost
-
     return chosen, log
 
 
@@ -133,6 +117,9 @@ class SabotageEngine:
     # The locked build each side plays, filled when `select` ends.
     picks: dict[str, list[str]] = field(default_factory=lambda: {"red": [], "blue": []})
     dropped: dict[str, list[dict]] = field(default_factory=lambda: {"red": [], "blue": []})
+    # Whether a side put nothing in at all, so the reveal can say "RED bought
+    # nothing" instead of showing a row of zeroes with no explanation.
+    no_bid: dict[str, bool] = field(default_factory=lambda: {"red": False, "blue": False})
     # Every finished round, so the final screen can replay them.
     history: list[dict] = field(default_factory=list)
     last_result: dict | None = None
@@ -254,11 +241,10 @@ class SabotageEngine:
     def _lock_picks(self) -> None:
         spec = self.round_spec()
         for team in TEAMS:
-            cards, dropped = aggregate(
-                self.team_votes(team), self.deck_for(team), spec["target"]
-            )
+            cards, dropped = self.live_build(team)
             self.picks[team] = cards
             self.dropped[team] = dropped
+            self.no_bid[team] = not cards
         self.last_result = self._resolve(spec)
 
     def _resolve(self, spec: dict) -> dict:
@@ -267,10 +253,21 @@ class SabotageEngine:
         attack_vector = cfg.vector_of(self.picks[attacker])
         defence_vector = cfg.vector_of(self.picks[defender])
         result = cfg.score_round(attack_vector, defence_vector, spec["target"])
-        self.scores[attacker] += result["attack_points"]
-        self.scores[defender] += result["defence_points"]
-        winner = attacker if result["broke_target"] else defender
-        self.rounds_won[winner] += 1
+
+        # Nobody bought anything on either side: a void round, not a 600-point
+        # gift to whoever happened to be defending. A single silent side still
+        # forfeits, which is what makes voting mandatory.
+        void = not self.picks[attacker] and not self.picks[defender]
+        if void:
+            result["attack_points"] = 0
+            result["defence_points"] = 0
+            result["outcome"] = "No bids"
+            winner = None
+        else:
+            self.scores[attacker] += result["attack_points"]
+            self.scores[defender] += result["defence_points"]
+            winner = attacker if result["broke_target"] else defender
+            self.rounds_won[winner] += 1
         record = {
             "round": spec["round"],
             "theme": spec["theme"],
@@ -282,6 +279,7 @@ class SabotageEngine:
             "attack_vector": list(attack_vector),
             "defence_vector": list(defence_vector),
             "winner": winner,
+            "void": void,
             "points": {
                 attacker: result["attack_points"],
                 defender: result["defence_points"],
@@ -308,6 +306,7 @@ class SabotageEngine:
                 self.votes = {}
                 self.picks = {"red": [], "blue": []}
                 self.dropped = {"red": [], "blue": []}
+                self.no_bid = {"red": False, "blue": False}
                 self.phase = "select"
             else:
                 self.phase = "final"
@@ -361,6 +360,7 @@ class SabotageEngine:
             ),
             "votes": {} if selecting else {team: self.vote_counts(team) for team in TEAMS},
             "dropped": self.dropped if self.phase in ("reveal", "final") else {},
+            "no_bid": self.no_bid if self.phase in ("reveal", "final") else {},
             "cards": cfg.CARDS,
             "domains": list(cfg.DOMAINS),
             "outcome_names": {f"{k[0]}-{k[1]}": v for k, v in cfg.OUTCOME_NAMES.items()},
@@ -520,7 +520,11 @@ async def auto_start_sabotage(code: str, main_engine) -> bool:
     node = main_engine._node() or {}
     if node.get("game") != "sabotage":
         return False
-    if main_engine.phase is not Phase.PLAYING:
+    # A paused show still starts the game: the operator pauses to inspect, and
+    # jumping to this node while paused used to drop the old engine without
+    # starting a new one, leaving every screen on the previous result.
+    paused = main_engine.phase is Phase.PAUSED
+    if main_engine.phase is not Phase.PLAYING and not paused:
         return False
     existing = sabotages.get(code)
     if existing is not None and existing.phase != "setup":
@@ -560,6 +564,9 @@ async def auto_start_sabotage(code: str, main_engine) -> bool:
     engine.teams = {"red": red, "blue": blue}
     _wire(code, engine)
     engine.start()
+    if paused:
+        # Frozen at the draw, so the game opens the moment the show resumes.
+        engine.pause()
     await engine.run_async()
     return True
 

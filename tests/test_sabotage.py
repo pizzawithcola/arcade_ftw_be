@@ -194,12 +194,49 @@ def test_the_four_card_limit_is_respected() -> None:
     assert len(chosen) <= cfg.MAX_CARDS
 
 
-def test_a_silent_team_still_gets_a_build() -> None:
-    """Nobody voting must not hand a team a zero: the engine fills the hand."""
+def test_a_silent_team_buys_nothing() -> None:
+    """No votes is no build.
+
+    Filling in the best affordable hand for a quiet team let a side that never
+    touched its iPad beat the side that voted - the exact complaint that came
+    back from the first play test.
+    """
     deck = cfg.cards_for(0, "attacker")
-    chosen, _ = aggregate({}, deck, cfg.DATA)
-    assert chosen
-    assert cfg.cost_of(chosen) <= cfg.BUDGET
+    chosen, log = aggregate({}, deck, cfg.DATA)
+    assert chosen == []
+    assert log == []
+
+
+def test_a_round_where_nobody_voted_is_void() -> None:
+    """Both sides silent is a wash, not a 600-point gift to the defender."""
+    engine = make_engine()
+    engine.start()
+    engine.advance()
+    engine.advance()
+    engine.advance()
+    result = engine.last_result
+    assert result is not None
+    assert result["void"] is True
+    assert result["outcome"] == "No bids"
+    assert result["winner"] is None
+    assert engine.scores == {"red": 0, "blue": 0}
+    assert engine.rounds_won == {"red": 0, "blue": 0}
+
+
+def test_a_side_that_did_not_vote_forfeits_the_round() -> None:
+    engine = make_engine()
+    engine.start()
+    engine.advance()
+    engine.advance()
+    # Only Blue votes; Red stays silent and must lose the round it attacks.
+    for player_id in engine.teams["blue"]:
+        engine.cast_vote(player_id, ["email_gateway", "security_training"])
+    engine.advance()
+    result = engine.last_result
+    assert result is not None
+    assert engine.picks["red"] == []
+    assert engine.no_bid["red"] is True
+    assert result["winner"] == "blue"
 
 
 # --- votes --------------------------------------------------------------------
@@ -456,6 +493,35 @@ async def test_vote_requires_a_player_token(client: AsyncClient, admin_headers: 
     response = await client.post("/api/sabotage/sab-auth/vote", json={"cards": []})
     assert response.status_code == 401
     sabotages.remove("sab-auth")
+
+
+async def test_a_paused_show_still_starts_the_game(
+    client: AsyncClient, admin_headers: dict
+) -> None:
+    """Jumping to the node while paused used to drop the old engine and start
+    nothing, so every screen kept showing the last result."""
+    from app.rooms import rooms
+
+    await client.post("/api/rooms", json={"code": "sab-paused-go"}, headers=admin_headers)
+    for name in ("One", "Two"):
+        headers, _ = await _login(client, name)
+        await client.post("/api/rooms/sab-paused-go/join", headers=headers)
+
+    engine = rooms.get("sab-paused-go")
+    assert engine is not None
+    await engine.go_to(SABOTAGE_INDEX)
+    assert sabotages.get("sab-paused-go") is not None
+
+    await client.post("/api/rooms/sab-paused-go/pause", headers=admin_headers)
+    await client.post(f"/api/rooms/sab-paused-go/go/{SABOTAGE_INDEX}", headers=admin_headers)
+
+    restarted = sabotages.get("sab-paused-go")
+    assert restarted is not None, "a paused show must still start the game"
+    assert restarted.phase == "team_reveal"
+    assert restarted.paused is True, "it must stay frozen while the show is paused"
+
+    await engine.finish()
+    sabotages.remove("sab-paused-go")
 
 
 async def test_pausing_the_room_pauses_sabotage(
