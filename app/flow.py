@@ -86,13 +86,9 @@ ROUND_FLOW: list[dict] = [
         "score": "data",
     },
     {"type": "leaderboard", "section": "data", "title": "Data Shadow standings", "duration_sec": 5},
-    {
-        "type": "brief",
-        "brief": "sabotage",
-        "title": "How Sabotage works",
-        "duration_sec": 15,
-        "section": "sabotage",
-    },
+    # No `brief` node here on purpose: Sabotage draws its teams and then shows
+    # its own 20-second rules card inside the node, so a flow-level card would
+    # introduce the game before the game introduces itself.
     {
         "type": "game",
         "game": "sabotage",

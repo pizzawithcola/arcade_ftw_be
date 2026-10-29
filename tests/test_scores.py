@@ -13,14 +13,19 @@ from app.players import SECTION_FIELDS
 
 # Indices into ROUND_FLOW, named so a reordered flow breaks the test loudly
 # rather than silently scoring the wrong section.
-# Each game is preceded by a 15s `brief` card, so the scored nodes sit one past
-# where they used to.
-HALLUCINATION_GAME = 2
-QUIZ_ROUND_1 = 3
-DATA_SHADOW = 6
-QUIZ_ROUND_2 = 7
-SABOTAGE = 10
-ULTIMATE_QUIZ = 13
+# Derived, not hardcoded: adding or removing an intro node used to break these
+# with an index that pointed at whatever had taken the old slot.
+from app.flow import ROUND_FLOW  # noqa: E402
+
+_GAMES = [i for i, node in enumerate(ROUND_FLOW) if node["type"] == "game"]
+_QUIZZES = [i for i, node in enumerate(ROUND_FLOW) if node["type"] == "quiz"]
+
+HALLUCINATION_GAME = _GAMES[0]
+DATA_SHADOW = _GAMES[1]
+SABOTAGE = _GAMES[2]
+QUIZ_ROUND_1 = _QUIZZES[0]
+QUIZ_ROUND_2 = _QUIZZES[1]
+ULTIMATE_QUIZ = _QUIZZES[2]
 INTRO = 0
 
 

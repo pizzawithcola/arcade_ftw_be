@@ -3,10 +3,11 @@
 from app.flow import ROUND_FLOW
 
 # (brief key, the game or quiz it introduces, the section it scores into)
+# Sabotage is the exception: it draws its teams and then shows its own rules
+# card inside the node, so a flow-level brief would introduce it twice.
 EXPECTED_BRIEFS = [
     ("hallucination", "hallucination", "hallucination"),
     ("data_shadow", "data_shadow", "data"),
-    ("sabotage", "sabotage", "sabotage"),
     ("ultimate_quiz", None, "ultimate"),
 ]
 
