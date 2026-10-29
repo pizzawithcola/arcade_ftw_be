@@ -21,9 +21,17 @@ reveal. The screens that are still placeholders keep short values.
 screen right now (see ``Engine.snapshot``). The big screen needs that to show the
 same question every iPad is answering; without it the question would only exist
 inside each device.
+
+``brief`` nodes are the 15s "how to play" card in front of each of the four
+games. ``brief`` names which game's wording to show; the engine treats it as an
+ordinary timed node, so nothing in the engine knows about intros. ``section`` is
+there so the console groups the card with the section it introduces.
 """
 
-# Intro - Hallucination - Quiz - Data Shadow - Quiz - Sabotage - Ultimate Quiz - Wrap up
+# Intro - [brief] Hallucination - Quiz - Data Shadow - Quiz - Sabotage - Ultimate Quiz - Wrap up
+#
+# Four of those nodes are ``brief`` cards: 15 seconds of rules in front of each
+# game, so nobody has to be told what to press on stage.
 #
 # Scoring nodes name the partition their points belong to (`score`). A game and
 # the quiz that follows it share one partition, so the round is scored as one
@@ -31,6 +39,13 @@ inside each device.
 # `scores` column; clients never name the column themselves.
 ROUND_FLOW: list[dict] = [
     {"type": "intro", "title": "Welcome", "duration_sec": 10},
+    {
+        "type": "brief",
+        "brief": "hallucination",
+        "title": "How Hallucination works",
+        "duration_sec": 15,
+        "section": "hallucination",
+    },
     {
         "type": "game",
         "game": "hallucination",
@@ -54,6 +69,13 @@ ROUND_FLOW: list[dict] = [
         "title": "Hallucination standings",
         "duration_sec": 5,
     },
+    {
+        "type": "brief",
+        "brief": "data_shadow",
+        "title": "How Data Shadow works",
+        "duration_sec": 15,
+        "section": "data",
+    },
     {"type": "game", "game": "data_shadow", "title": "Data Shadow", "duration_sec": 51, "score": "data"},
     {
         "type": "quiz",
@@ -64,6 +86,13 @@ ROUND_FLOW: list[dict] = [
         "score": "data",
     },
     {"type": "leaderboard", "section": "data", "title": "Data Shadow standings", "duration_sec": 5},
+    {
+        "type": "brief",
+        "brief": "sabotage",
+        "title": "How Sabotage works",
+        "duration_sec": 15,
+        "section": "sabotage",
+    },
     {
         "type": "game",
         "game": "sabotage",
@@ -79,6 +108,13 @@ ROUND_FLOW: list[dict] = [
         "section": "sabotage",
         "title": "Sabotage standings",
         "duration_sec": 5,
+    },
+    {
+        "type": "brief",
+        "brief": "ultimate_quiz",
+        "title": "How the Ultimate Quiz works",
+        "duration_sec": 15,
+        "section": "ultimate",
     },
     {
         "type": "quiz",

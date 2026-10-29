@@ -11,7 +11,12 @@ from httpx import ASGITransport, AsyncClient
 from app import sabotage_config as cfg
 from app.auth import ADMIN_SUBJECT, SCOPE_FULL, create_token
 from app.main import app
+from app.flow import ROUND_FLOW
 from app.sabotage import SabotageEngine, SabotageError, sabotages
+
+# Derived, not hardcoded: inserting a node into the rundown used to break these
+# tests with an index that pointed at whatever had taken the old slot.
+SABOTAGE_INDEX = next(i for i, node in enumerate(ROUND_FLOW) if node.get("game") == "sabotage")
 
 
 def make_engine(code: str = "sab-eng") -> SabotageEngine:
@@ -383,11 +388,11 @@ async def test_auto_start_when_the_flow_reaches_the_sabotage_node(
         headers, _ = await _login(client, name)
         await client.post("/api/rooms/sab-auto/join", headers=headers)
 
-    # The main flow lands on the Sabotage node (index 7 after the two
-    # leaderboard inserts) and the broadcast listener starts the game.
+    # The main flow lands on the Sabotage node and the broadcast listener
+    # starts the game.
     engine = rooms.get("sab-auto")
     assert engine is not None
-    await engine.go_to(7)
+    await engine.go_to(SABOTAGE_INDEX)
 
     sab = sabotages.get("sab-auto")
     assert sab is not None
@@ -408,7 +413,7 @@ async def test_every_jump_back_to_node_5_reassigns_teams(
     client: AsyncClient, admin_headers: dict
 ) -> None:
     """The operator rehearses by jumping away and back: each landing on the
-    Sabotage node (index 7) is a brand new game, teams re-assigned fresh."""
+    Sabotage node is a brand new game, teams re-assigned fresh."""
     from app.rooms import rooms
     from app.sabotage import sabotages
 
@@ -421,7 +426,7 @@ async def test_every_jump_back_to_node_5_reassigns_teams(
     assert engine is not None
 
     # First landing (via the operator's jump endpoint): a fresh game.
-    await client.post("/api/rooms/sab-rejump/go/7", headers=admin_headers)
+    await client.post(f"/api/rooms/sab-rejump/go/{SABOTAGE_INDEX}", headers=admin_headers)
     first = sabotages.get("sab-rejump")
     assert first is not None
     assert first.phase == "team_reveal"
@@ -430,7 +435,7 @@ async def test_every_jump_back_to_node_5_reassigns_teams(
     await client.post("/api/rooms/sab-rejump/go/0", headers=admin_headers)
     assert sabotages.get("sab-rejump") is None
 
-    await client.post("/api/rooms/sab-rejump/go/7", headers=admin_headers)
+    await client.post(f"/api/rooms/sab-rejump/go/{SABOTAGE_INDEX}", headers=admin_headers)
     second = sabotages.get("sab-rejump")
     assert second is not None
     assert second is not first  # a new engine, not the resumed one
@@ -466,12 +471,12 @@ async def test_a_solo_room_is_paid_and_the_game_is_skipped(
 
     engine = rooms.get("sab-solo")
     assert engine is not None
-    await engine.go_to(7)
+    await engine.go_to(SABOTAGE_INDEX)
 
     # One player cannot field two teams: no game runs, and the flow has already
     # moved past the node instead of waiting out its 170-second slot.
     assert sabotages.get("sab-solo") is None
-    assert engine.index == 8
+    assert engine.index == SABOTAGE_INDEX + 1
     assert (engine._node() or {}).get("game") != "sabotage"
 
     async with SessionLocal() as session:

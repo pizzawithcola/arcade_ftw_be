@@ -13,12 +13,14 @@ from app.players import SECTION_FIELDS
 
 # Indices into ROUND_FLOW, named so a reordered flow breaks the test loudly
 # rather than silently scoring the wrong section.
-HALLUCINATION_GAME = 1
-QUIZ_ROUND_1 = 2
-DATA_SHADOW = 4
-QUIZ_ROUND_2 = 5
-SABOTAGE = 7
-ULTIMATE_QUIZ = 9
+# Each game is preceded by a 15s `brief` card, so the scored nodes sit one past
+# where they used to.
+HALLUCINATION_GAME = 2
+QUIZ_ROUND_1 = 3
+DATA_SHADOW = 6
+QUIZ_ROUND_2 = 7
+SABOTAGE = 10
+ULTIMATE_QUIZ = 13
 INTRO = 0
 
 
