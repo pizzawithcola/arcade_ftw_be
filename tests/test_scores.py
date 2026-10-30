@@ -23,9 +23,10 @@ _QUIZZES = [i for i, node in enumerate(ROUND_FLOW) if node["type"] == "quiz"]
 HALLUCINATION_GAME = _GAMES[0]
 DATA_SHADOW = _GAMES[1]
 SABOTAGE = _GAMES[2]
-QUIZ_ROUND_1 = _QUIZZES[0]
-QUIZ_ROUND_2 = _QUIZZES[1]
-ULTIMATE_QUIZ = _QUIZZES[2]
+# One quiz left in the show: the Ultimate round. The two quizzes that used to
+# follow Hallucination and Data Shadow were cut, so anything that indexes
+# `_QUIZZES` by hand would now be pointing at nothing.
+ULTIMATE_QUIZ = _QUIZZES[0]
 INTRO = 0
 
 
@@ -93,28 +94,31 @@ async def test_a_game_answer_lands_in_its_section(
     assert listed.json()["players"][0]["total_score"] == 20
 
 
-async def test_the_quiz_after_a_game_shares_its_section(
+async def test_each_node_scores_into_its_own_column(
     client: AsyncClient, admin_headers: dict
 ) -> None:
-    """Hallucination + Quiz round 1 are one section, so the column accumulates."""
+    """Three game nodes and one quiz, four columns, no column touched twice by
+    accident: a report is added to the section its node names."""
     await _room(client, admin_headers, "score-sections")
     headers = await _player(client, "Sectioned", room="score-sections")
 
-    await _report(client, headers, "score-sections", HALLUCINATION_GAME, 20, question=0)
-    quiz = await _report(client, headers, "score-sections", QUIZ_ROUND_1, 20, question=0)
-    assert quiz.status_code == 200
-    assert quiz.json()["hallucination_score"] == 40
+    # Hallucination is now three questions, and each one reports on its own.
+    for question in range(3):
+        await _report(client, headers, "score-sections", HALLUCINATION_GAME, 20, question=question)
+    hallucination = await _report(
+        client, headers, "score-sections", HALLUCINATION_GAME, 20, question=0
+    )
+    # Replaying question 0 must not pay twice; the three distinct ones did.
+    assert hallucination.json()["applied"] is False
 
     data = await _report(client, headers, "score-sections", DATA_SHADOW, 45, question=None)
     assert data.json()["data_score"] == 45
-    assert data.json()["hallucination_score"] == 40
+    # Three questions of 20, and the replay above paid nothing.
+    assert data.json()["hallucination_score"] == 60
 
-    quiz2 = await _report(client, headers, "score-sections", QUIZ_ROUND_2, 20, question=0)
-    assert quiz2.json()["data_score"] == 65
-
-    ultimate = await _report(client, headers, "score-sections", ULTIMATE_QUIZ, 20, question=0)
+    ultimate = await _report(client, headers, "score-sections", ULTIMATE_QUIZ, 20, question=4)
     assert ultimate.json()["ultimate_score"] == 20
-    assert ultimate.json()["total_score"] == 40 + 65 + 20
+    assert ultimate.json()["total_score"] == 60 + 45 + 20
 
 
 async def test_a_replayed_report_does_not_pay_twice(

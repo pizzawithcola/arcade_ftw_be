@@ -71,19 +71,26 @@ def test_every_game_opens_with_its_name():
 
     The name lands before the rules on purpose: the room should know what it is
     about to play before it is told how. Sabotage has no rules card in the flow,
-    so its title sits directly before the game node.
+    so its title sits directly before the game node. The Ultimate quiz is the
+    exception: its round goes straight from the rules card into the questions,
+    so the brief is the announcement.
     """
     from app.flow import ROUND_FLOW as FLOW
 
-    for key, game, _section in EXPECTED_BRIEFS:
+    for key, game, section in EXPECTED_BRIEFS:
         at = next(i for i, node in enumerate(FLOW) if node.get("brief") == key)
+        # The brief is immediately before the node it introduces, which the
+        # console's grouping relies on.
+        assert FLOW[at + 1].get("game") == game or FLOW[at + 1]["type"] == "quiz"
+
+        if section == "ultimate":
+            assert FLOW[at - 1]["type"] != "title", "the Ultimate round has no name card"
+            continue
+
         title = FLOW[at - 1]
         assert title["type"] == "title", f"{key} has no title card before its rules"
         assert title["duration_sec"] == 5
         assert title.get("score") is None, "a title card must not score"
-        # The brief is still immediately before the game, which the console's
-        # grouping relies on.
-        assert FLOW[at + 1].get("game") == game or FLOW[at + 1]["type"] == "quiz"
 
     # Sabotage: title, then the game itself.
     sabotage = next(i for i, node in enumerate(FLOW) if node.get("game") == "sabotage")
@@ -93,10 +100,28 @@ def test_every_game_opens_with_its_name():
 
 def test_titles_open_a_section_and_score_nothing():
     titles = [node for node in ROUND_FLOW if node["type"] == "title"]
-    assert len(titles) == 4
+    # Three games get a name card; the Ultimate round opens on its rules card.
+    assert len(titles) == 3
     for node in titles:
         assert node["section"], "a title has to sit in its game's section"
         assert node.get("score") is None
+
+
+def test_only_the_ultimate_round_still_has_a_quiz():
+    """The quizzes after Hallucination and Data Shadow were cut, so a quiz node
+    can only belong to the Ultimate section."""
+    quizzes = [node for node in ROUND_FLOW if node["type"] == "quiz"]
+    assert len(quizzes) == 1
+    assert quizzes[0]["score"] == "ultimate"
+    assert quizzes[0]["questions"] == 5
+
+
+def test_no_quiz_opens_on_a_title_card():
+    """The Ultimate quiz starts on its first question: no `intro_sec`, or the
+    engine and the wall would spend the first five seconds on a card."""
+    for node in ROUND_FLOW:
+        if node["type"] == "quiz":
+            assert not node.get("intro_sec"), f"{node['title']} still has an intro card"
 
 
 def test_the_welcome_outlasts_its_own_reveal():

@@ -9,19 +9,20 @@ A node has two identifying fields:
   dispatches on ``game`` for its own screen while ``type`` stays broad.
 
 ``title`` is display-only: the audience reads it, but no code branches on it.
-That is what lets the two ordinary quiz rounds and the ultimate quiz all be
-``type: "quiz"`` without the code having to tell them apart.
+There is one quiz left in the show - the Ultimate - so nothing has to tell the
+quizzes apart any more, but the split stays: copy is not structure.
 
 Durations for the built screens are content-driven: the node has to outlast its
 questions, or the engine advances mid-question. A question is a fixed cycle:
-25s to answer plus 5s reading the verdict for Hallucination, 20s plus 5s for a
+25s to answer plus 5s reading the verdict for Hallucination, 20s plus 5s for the
 quiz, and the verdict page advances itself so nobody has to press anything.
-Quiz nodes also open with a 5s ``intro_sec`` title card, so ``duration_sec`` is
-the intro plus both cycles. The screens that are still placeholders keep short
-values.
+Every node also keeps a tail after its last question so the closing score is not
+cut off - ``duration_sec`` is the cycles plus that tail.
 
 ``intro_sec`` is subtracted before ``seconds_each`` is applied, so the question
-index the big screen shows is still derived from the node clock alone.
+index the big screen shows is still derived from the node clock alone. No node
+sets it today: the Ultimate quiz starts on its first question, because the brief
+card in front of it has already announced the round.
 
 ``questions`` + ``seconds_each`` also let the engine say *which* question is on
 screen right now (see ``Engine.snapshot``). The big screen needs that to show the
@@ -29,7 +30,8 @@ same question every iPad is answering; without it the question would only exist
 inside each device.
 
 ``title`` nodes are the 5s name card in front of each game, and ``brief`` nodes
-are the 15s "how to play" card that follows it. ``title`` and ``brief`` each name
+are the 15s "how to play" card that follows it. The Ultimate quiz has a brief and
+no name card: the last round goes straight from the rules into the questions. ``title`` and ``brief`` each name
 which game's wording to show; the engine treats both as ordinary timed nodes, so
 nothing in the engine knows about intros. ``section`` is there so the console
 groups the cards with the section they introduce.
@@ -39,16 +41,16 @@ to play, then the rules, then the game. A ``brief`` still sits immediately befor
 the node it introduces, which is what the console's grouping relies on.
 """
 
-# Intro - [title, brief] Hallucination - Quiz - [title, brief] Data Shadow - Quiz
-# - [title] Sabotage - [title, brief] Ultimate Quiz - Wrap up
+# Intro - [title, brief] Hallucination - [title, brief] Data Shadow
+# - [title] Sabotage - [brief] Ultimate Quiz - Wrap up
 #
-# Four of those nodes are ``brief`` cards: 15 seconds of rules in front of each
+# Three of those nodes are ``brief`` cards: 15 seconds of rules in front of each
 # game, so nobody has to be told what to press on stage.
 #
-# Scoring nodes name the partition their points belong to (`score`). A game and
-# the quiz that follows it share one partition, so the round is scored as one
-# section rather than as five separate columns. The server maps this key to a
-# `scores` column; clients never name the column themselves.
+# Scoring nodes name the partition their points belong to (`score`). One column
+# per section, so the board reads Hallucination / Data / Sabotage / Ultimate
+# rather than one column per node. The server maps this key to a `scores`
+# column; clients never name the column themselves.
 ROUND_FLOW: list[dict] = [
     # The welcome lays out the four games one card at a time, so the slot has to
     # outlast the reveal (2.2s lead-in + 4 cards a second apart + reading time).
@@ -65,19 +67,10 @@ ROUND_FLOW: list[dict] = [
         "type": "game",
         "game": "hallucination",
         "title": "Hallucination",
-        "duration_sec": 66,
-        "questions": 2,
+        # 3 x (25s answer + 5s verdict) + 6s of closing score.
+        "duration_sec": 96,
+        "questions": 3,
         "seconds_each": 30,
-        "score": "hallucination",
-    },
-    {
-        "type": "quiz",
-        "title": "Quiz round 1",
-        # 5s title card + 2 x (20s answer + 5s verdict) + 5s of final score.
-        "duration_sec": 60,
-        "intro_sec": 5,
-        "questions": 2,
-        "seconds_each": 25,
         "score": "hallucination",
     },
     {
@@ -96,16 +89,6 @@ ROUND_FLOW: list[dict] = [
         "section": "data",
     },
     {"type": "game", "game": "data_shadow", "title": "Data Shadow", "duration_sec": 86, "score": "data"},
-    {
-        "type": "quiz",
-        "title": "Quiz round 2",
-        # 5s title card + 2 x (20s answer + 5s verdict) + 5s of final score.
-        "duration_sec": 60,
-        "intro_sec": 5,
-        "questions": 2,
-        "seconds_each": 25,
-        "score": "data",
-    },
     {"type": "leaderboard", "section": "data", "title": "Data Shadow standings", "duration_sec": 8},
     {"type": "title", "title": "sabotage", "duration_sec": 5, "section": "sabotage"},
     # No `brief` node here on purpose: Sabotage draws its teams and then shows
@@ -115,12 +98,13 @@ ROUND_FLOW: list[dict] = [
         "type": "game",
         "game": "sabotage",
         "title": "Sabotage",
-        # The Sabotage engine runs its own clock (~2.5 minutes plus tie-break
+        # The Sabotage engine runs its own clock (~4 minutes plus tie-break
         # headroom) and broadcasts it over WS; this node only holds the slot
         # in the main flow for as long as the game needs.
-        # Sabotage v2 runs its own ~3.5 minute clock (8s draw + 20s rules +
-        # 4 x (select + reveal) + final); this slot only has to be long enough.
-        "duration_sec": 225,
+        # Sabotage v2 runs its own clock (8s draw + 20s rules + 50s first pick +
+        # 3 x 35s picks + 4 x 10s reveals + 20s final = 243s); this slot only
+        # has to be long enough.
+        "duration_sec": 250,
         "score": "sabotage",
     },
     {
@@ -129,7 +113,8 @@ ROUND_FLOW: list[dict] = [
         "title": "Sabotage standings",
         "duration_sec": 8,
     },
-    {"type": "title", "title": "ultimate", "duration_sec": 5, "section": "ultimate"},
+    # No `title` node: the last round is announced by its rules card and then
+    # goes straight into the questions.
     {
         "type": "brief",
         "brief": "ultimate_quiz",
@@ -140,10 +125,10 @@ ROUND_FLOW: list[dict] = [
     {
         "type": "quiz",
         "title": "Ultimate Quiz",
-        # 5s title card + 2 x (20s answer + 5s verdict) + 5s of final score.
-        "duration_sec": 60,
-        "intro_sec": 5,
-        "questions": 2,
+        # 5 x (20s answer + 5s verdict) + 5s of closing score. No `intro_sec`:
+        # the first question is on screen from the first second.
+        "duration_sec": 130,
+        "questions": 5,
         "seconds_each": 25,
         "score": "ultimate",
     },
