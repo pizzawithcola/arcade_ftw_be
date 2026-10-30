@@ -20,6 +20,10 @@ from app.sabotage import SabotageEngine, SabotageError, aggregate, sabotages
 # tests with an index that pointed at whatever had taken the old slot.
 SABOTAGE_INDEX = next(i for i, node in enumerate(ROUND_FLOW) if node.get("game") == "sabotage")
 
+# Stands in for "money is no object" when a test is about the decks rather than
+# the budget: comfortably more than four of the dearest cards.
+ANY_MONEY = 10**9
+
 
 def make_engine(code: str = "sab-eng") -> SabotageEngine:
     engine = SabotageEngine(code=code)
@@ -27,16 +31,53 @@ def make_engine(code: str = "sab-eng") -> SabotageEngine:
     return engine
 
 
-def best_target(deck: list[str], target: str) -> int:
-    """The strongest target column a side can afford, by exhaustion."""
+def affordable_hands(deck: list[str], target: str, budget: int):
+    """Every hand a side could field for `budget`, with its target column."""
     index = cfg.DOMAINS.index(target)
-    best = 0
     for size in range(1, cfg.MAX_CARDS + 1):
         for combo in combinations(deck, size):
-            if cfg.cost_of(combo) > cfg.BUDGET:
-                continue
-            best = max(best, cfg.vector_of(combo)[index])
-    return best
+            cost = cfg.cost_of(combo)
+            if cost <= budget:
+                yield cfg.vector_of(combo)[index], cost, combo
+
+
+def best_target(deck: list[str], target: str, budget: int) -> int:
+    """The strongest target column a side can afford, by exhaustion."""
+    return max(value for value, _, _ in affordable_hands(deck, target, budget))
+
+
+def cheapest_ceiling(deck: list[str], target: str) -> int:
+    """The least money that still reaches the deck's best target column.
+
+    This is the number the match budget is designed around: the round a side
+    cannot max out is the round it has to decide to lose.
+    """
+    ceiling = best_target(deck, target, ANY_MONEY)
+    return min(
+        cost for value, cost, _ in affordable_hands(deck, target, ANY_MONEY) if value == ceiling
+    )
+
+
+def best_hand(engine: SabotageEngine, team: str) -> list[str]:
+    """The cheapest hand that maxes this side's target column with the money
+    the team has left, or nothing when even the cheapest card does not fit."""
+    deck = engine.deck_for(team)
+    target = engine.round_spec()["target"]
+    hands = affordable_hands(deck, target, engine.remaining(team))
+    scored = list(hands)
+    if not scored:
+        return []
+    ceiling = max(value for value, _, _ in scored)
+    cost, hand = min((cost, combo) for value, cost, combo in scored if value == ceiling)
+    return list(hand)
+
+
+def play_round(engine: SabotageEngine) -> None:
+    """Both sides field their best affordable hand, as a well-run team would."""
+    for team in ("red", "blue"):
+        hand = best_hand(engine, team)
+        for player_id in engine.teams[team]:
+            engine.cast_vote(player_id, hand)
 
 
 # --- balance ------------------------------------------------------------------
@@ -44,12 +85,77 @@ def test_every_round_keeps_the_one_point_margin() -> None:
     """The attacker is exactly one point ahead when both sides play optimally.
 
     One point is the whole design: spend badly and you do not break through,
-    waste a slot on a distraction and the defence holds.
+    waste a slot on a distraction and the defence holds. Deliberately measured
+    without a budget - this is about how the decks are built, and running out of
+    money is the separate story the money tests tell.
     """
     for index, spec in enumerate(cfg.ROUNDS):
-        attack = best_target(cfg.cards_for(index, "attacker"), spec["target"])
-        defence = best_target(cfg.cards_for(index, "defender"), spec["target"])
+        attack = best_target(cfg.cards_for(index, "attacker"), spec["target"], ANY_MONEY)
+        defence = best_target(cfg.cards_for(index, "defender"), spec["target"], ANY_MONEY)
         assert attack == defence + 1, f"round {spec['round']} is {attack} vs {defence}"
+
+
+def test_one_round_costs_between_25_and_30_thousand() -> None:
+    """A round maxed out has to be a quarter to a third of the match budget.
+
+    Cheaper and the money never bites; dearer and the first round decides the
+    match on its own.
+    """
+    for index, spec in enumerate(cfg.ROUNDS):
+        for role in ("attacker", "defender"):
+            cost = cheapest_ceiling(cfg.cards_for(index, role), spec["target"])
+            assert 25_000 <= cost <= 30_000, f"round {spec['round']} {role} costs ${cost:,}"
+
+
+def test_four_full_rounds_cost_more_than_the_pool() -> None:
+    """The budget has to bite, or "shared" means nothing: both sides can reach
+    their ceiling every round, and neither can pay for all four."""
+    for team in ("red", "blue"):
+        total = 0
+        for index, spec in enumerate(cfg.ROUNDS):
+            role = "attacker" if spec["attacker"] == team else "defender"
+            total += cheapest_ceiling(cfg.cards_for(index, role), spec["target"])
+        assert total > cfg.TOTAL_BUDGET, f"{team} can afford every round: ${total:,}"
+
+
+def test_the_last_round_is_the_one_that_has_to_give() -> None:
+    """Three rounds at full strength leave less than the fourth one needs.
+
+    This is the planning story of the whole game, so it is pinned: if it ever
+    stops being true the reveal has nothing to reveal.
+    """
+    engine = make_engine()
+    engine.start()
+    engine.advance()  # team_reveal -> brief
+    engine.advance()  # brief -> select
+    for _ in range(len(cfg.ROUNDS) - 1):
+        play_round(engine)
+        engine.advance()  # select -> reveal
+        engine.advance()  # reveal -> next select
+
+    last = len(cfg.ROUNDS) - 1
+    for team in ("red", "blue"):
+        role = "attacker" if cfg.ROUNDS[last]["attacker"] == team else "defender"
+        needs = cheapest_ceiling(cfg.cards_for(last, role), cfg.ROUNDS[last]["target"])
+        assert engine.remaining(team) < needs, f"{team} can still afford the last round"
+    assert engine.spent("red") + engine.spent("blue") == 161_000
+
+
+def test_money_is_a_match_pool_not_a_round_allowance() -> None:
+    """What round one buys comes out of round four, so the pool only goes down."""
+    engine = make_engine()
+    engine.start()
+    engine.advance()
+    engine.advance()
+    assert engine.remaining("red") == cfg.TOTAL_BUDGET
+
+    play_round(engine)
+    engine.advance()  # select -> reveal
+    round_one = engine.spent("red")
+    assert round_one == cfg.cost_of(engine.picks["red"])
+    assert engine.remaining("red") == cfg.TOTAL_BUDGET - round_one
+    assert engine.snapshot()["budget"]["red"] == cfg.TOTAL_BUDGET - round_one
+
 
 
 def test_each_team_attacks_twice() -> None:
@@ -65,10 +171,20 @@ def test_the_three_targets_all_appear() -> None:
     assert targets == set(cfg.DOMAINS)
 
 
-def test_every_card_is_used_by_exactly_one_round() -> None:
-    used = [card for spec in cfg.ROUNDS for card in spec["attack"] + spec["defence"]]
-    assert len(used) == len(set(used))
-    assert set(used) == set(cfg.CARDS)
+def test_every_card_belongs_to_a_deck() -> None:
+    """No orphan cards: an entry nothing plays is a card nobody can ever see."""
+    used = {card for spec in cfg.ROUNDS for card in spec["attack"] + spec["defence"]}
+    assert used == set(cfg.CARDS)
+
+
+def test_no_deck_lists_the_same_card_twice() -> None:
+    """A deck is five different cards. A repeat would be a dead slot on the
+    phone, and the four-card limit already caps the hand."""
+    for index, spec in enumerate(cfg.ROUNDS):
+        for role in ("attacker", "defender"):
+            deck = cfg.cards_for(index, role)
+            assert len(deck) == len(set(deck)), f"round {spec['round']} {role} repeats a card"
+            assert len(deck) > cfg.MAX_CARDS, "a deck must hold more cards than one hand"
 
 
 def test_vectors_stay_inside_the_scale() -> None:
@@ -146,50 +262,57 @@ def test_every_flank_counts() -> None:
 def test_the_most_voted_cards_are_bought() -> None:
     deck = cfg.cards_for(0, "attacker")
     chosen, dropped = aggregate(
-        {1: ["cloned_login_page", "urgent_deadline"], 2: ["cloned_login_page"]},
+        {1: ["fake_sign_in_page", "urgent_deadline"], 2: ["fake_sign_in_page"]},
         deck,
         cfg.DATA,
+        cfg.TOTAL_BUDGET,
     )
-    assert "cloned_login_page" in chosen
+    assert "fake_sign_in_page" in chosen
     assert dropped == []
 
 
-def test_a_tie_is_broken_by_target_strength_not_by_price() -> None:
-    """Breaking a tie on price would reward voting for expensive cards, and the
-    budget would drain before the target is covered."""
-    deck = cfg.cards_for(0, "attacker")
-    # One vote each: the cloned page (data 3) must beat the dearer attachment
-    # (data 2) even though the attachment costs more.
+def test_a_tie_is_broken_by_target_strength_before_price() -> None:
+    """Price is the last thing consulted, not the first.
+
+    Sorting by price would reward voting for expensive cards and drain the
+    shared pool before the target is covered. Here the dearer card wins because
+    it is the one that scores on the round's target.
+    """
+    deck = cfg.cards_for(1, "attacker")
     chosen, _ = aggregate(
-        {1: ["cloned_login_page"], 2: ["malicious_attachment"]}, deck, cfg.DATA
+        {1: ["lookalike_website"], 2: ["do_not_escalate"]},
+        deck,
+        cfg.PEOPLE,
+        cfg.TOTAL_BUDGET,
     )
-    assert chosen[0] == "cloned_login_page"
+    assert cfg.CARDS["do_not_escalate"]["cost"] > cfg.CARDS["lookalike_website"]["cost"]
+    assert chosen[0] == "do_not_escalate"
 
 
-def test_a_card_that_does_not_fit_is_skipped() -> None:
+def test_a_card_the_team_cannot_afford_is_skipped() -> None:
     deck = cfg.cards_for(0, "attacker")
-    # 42 + 42 is over budget: the second copy of the attachment (as a vote from
-    # another player) must not be bought, and a cheaper card takes the slot.
+    # Round one prices run 8k, 13k, 4k, 2k, 1k. With $15,000 the two strongest
+    # do not fit together, so the dearer attachment is logged as unaffordable
+    # and a cheaper card takes the slot instead of the vote being wasted.
     chosen, dropped = aggregate(
-        {
-            1: ["malicious_attachment", "personalised_context"],
-            2: ["cloned_login_page", "malicious_attachment"],
-            3: ["urgent_deadline"],
-        },
+        {1: ["fake_sign_in_page", "malicious_attachment", "fake_sender_name"]},
         deck,
         cfg.DATA,
+        15_000,
     )
-    assert cfg.cost_of(chosen) <= cfg.BUDGET
+    assert "malicious_attachment" not in chosen
+    assert cfg.cost_of(chosen) <= 15_000
     assert len(chosen) <= cfg.MAX_CARDS
-    assert all(entry["reason"] in ("budget", "slots") for entry in dropped)
+    assert [entry["reason"] for entry in dropped] == ["budget"]
 
 
 def test_the_four_card_limit_is_respected() -> None:
     deck = cfg.cards_for(1, "attacker")
     chosen, _ = aggregate(
-        {1: ["urgent_wire", "authority_pressure", "lookalike_domain", "check_domain"]},
+        {1: ["urgent_wire", "do_not_escalate", "lookalike_website", "vishing_call"]},
         deck,
         cfg.PEOPLE,
+        cfg.TOTAL_BUDGET,
     )
     assert len(chosen) <= cfg.MAX_CARDS
 
@@ -202,7 +325,7 @@ def test_a_silent_team_buys_nothing() -> None:
     back from the first play test.
     """
     deck = cfg.cards_for(0, "attacker")
-    chosen, log = aggregate({}, deck, cfg.DATA)
+    chosen, log = aggregate({}, deck, cfg.DATA, cfg.TOTAL_BUDGET)
     assert chosen == []
     assert log == []
 
@@ -230,7 +353,7 @@ def test_a_side_that_did_not_vote_forfeits_the_round() -> None:
     engine.advance()
     # Only Blue votes; Red stays silent and must lose the round it attacks.
     for player_id in engine.teams["blue"]:
-        engine.cast_vote(player_id, ["email_gateway", "security_training"])
+        engine.cast_vote(player_id, ["block_spam", "security_training"])
     engine.advance()
     result = engine.last_result
     assert result is not None
@@ -246,19 +369,27 @@ def test_a_card_outside_the_rounds_deck_is_refused() -> None:
     engine.advance()  # team_reveal -> brief
     engine.advance()  # brief -> select
     with pytest.raises(SabotageError):
-        engine.cast_vote(1, ["prompt_injection"])
+        engine.cast_vote(1, ["poison_source"])
 
 
-def test_an_over_budget_hand_is_refused() -> None:
+def test_a_hand_beyond_what_is_left_is_refused() -> None:
+    """Money belongs to the match, not to the round: by round four the same
+    deck can hold a hand the team can no longer pay for."""
     engine = make_engine()
     engine.start()
     engine.advance()
     engine.advance()
+    for _ in range(len(cfg.ROUNDS) - 1):
+        play_round(engine)
+        engine.advance()  # select -> reveal
+        engine.advance()  # reveal -> next select
+
+    assert engine.round == len(cfg.ROUNDS) - 1
+    dearest = sorted(engine.deck_for("red"), key=lambda card: -cfg.CARDS[card]["cost"])
+    hand = dearest[: cfg.MAX_CARDS]
+    assert cfg.cost_of(hand) > engine.remaining("red")
     with pytest.raises(SabotageError):
-        engine.cast_vote(
-            1,
-            ["malicious_attachment", "cloned_login_page", "spoofed_sender", "personalised_context"],
-        )
+        engine.cast_vote(1, hand)
 
 
 def test_more_than_four_cards_is_refused() -> None:
@@ -269,7 +400,7 @@ def test_more_than_four_cards_is_refused() -> None:
     with pytest.raises(SabotageError):
         engine.cast_vote(
             1,
-            ["urgent_deadline", "personalised_context", "spoofed_sender", "cloned_login_page", "malicious_attachment"],
+            ["urgent_deadline", "personal_details", "fake_sender_name", "fake_sign_in_page", "malicious_attachment"],
         )
 
 
@@ -278,7 +409,7 @@ def test_votes_are_only_open_while_selecting() -> None:
     engine.start()
     assert engine.phase == "team_reveal"
     with pytest.raises(SabotageError):
-        engine.cast_vote(1, ["cloned_login_page"])
+        engine.cast_vote(1, ["fake_sign_in_page"])
 
 
 # --- the show -----------------------------------------------------------------
@@ -294,18 +425,7 @@ def test_a_full_show_runs_four_rounds_and_finishes() -> None:
     for round_index in range(len(cfg.ROUNDS)):
         assert engine.phase == "select", f"round {round_index + 1}"
         assert engine.round == round_index
-        spec = engine.round_spec()
-        # Both sides vote for their strongest affordable hand.
-        for team in ("red", "blue"):
-            deck = engine.deck_for(team)
-            index = cfg.DOMAINS.index(spec["target"])
-            picks = sorted(deck, key=lambda c: -cfg.CARDS[c]["vector"][index])
-            hand: list[str] = []
-            for card in picks:
-                if len(hand) < cfg.MAX_CARDS and cfg.cost_of(hand + [card]) <= cfg.BUDGET:
-                    hand.append(card)
-            for player_id in engine.teams[team]:
-                engine.cast_vote(player_id, hand)
+        play_round(engine)
         engine.advance()  # select -> reveal
         assert engine.phase == "reveal"
         assert engine.last_result is not None
@@ -317,6 +437,9 @@ def test_a_full_show_runs_four_rounds_and_finishes() -> None:
     # Four rounds of a 600-point pool: nothing is created or destroyed.
     assert engine.scores["red"] + engine.scores["blue"] == 600 * len(cfg.ROUNDS)
     assert engine.rounds_won["red"] + engine.rounds_won["blue"] == len(cfg.ROUNDS)
+    # Nobody finished the game with money to spare: the pool is the constraint.
+    assert engine.remaining("red") == cfg.TOTAL_BUDGET - engine.spent("red")
+    assert engine.snapshot()["total_budget"] == cfg.TOTAL_BUDGET
 
     engine.advance()
     assert engine.phase == "done"
@@ -335,7 +458,7 @@ def test_no_build_is_public_while_selecting() -> None:
     engine.start()
     engine.advance()
     engine.advance()
-    engine.cast_vote(1, ["cloned_login_page"])
+    engine.cast_vote(1, ["fake_sign_in_page"])
     snapshot = engine.snapshot()
     assert snapshot["phase"] == "select"
     assert snapshot["target"] == cfg.DATA
@@ -349,11 +472,12 @@ def test_a_team_sees_its_own_build_only() -> None:
     engine.start()
     engine.advance()
     engine.advance()
-    engine.cast_vote(1, ["cloned_login_page"])
+    engine.cast_vote(1, ["fake_sign_in_page"])
     red = engine.team_view("red")
     blue = engine.team_view("blue")
-    assert red["build"] == ["cloned_login_page"]
-    assert red["budget"] == cfg.BUDGET - cfg.CARDS["cloned_login_page"]["cost"]
+    assert red["build"] == ["fake_sign_in_page"]
+    assert red["round_budget"] == cfg.TOTAL_BUDGET
+    assert red["budget"] == cfg.TOTAL_BUDGET - cfg.CARDS["fake_sign_in_page"]["cost"]
     assert red["role"] == "attacker"
     assert blue["build"] == []
     assert blue["role"] == "defender"
@@ -393,7 +517,7 @@ def test_a_paused_show_refuses_votes() -> None:
     engine.advance()
     engine.pause()
     with pytest.raises(SabotageError):
-        engine.cast_vote(1, ["cloned_login_page"])
+        engine.cast_vote(1, ["fake_sign_in_page"])
 
 
 # --- API shell ----------------------------------------------------------------
@@ -445,7 +569,7 @@ async def test_start_opens_with_the_team_draw(client: AsyncClient, admin_headers
     # Voting is not open yet, so a player vote is refused.
     player, _ = await _login(client, "One")
     voted = await client.post(
-        "/api/sabotage/sab-start/vote", json={"cards": ["cloned_login_page"]}, headers=player
+        "/api/sabotage/sab-start/vote", json={"cards": ["fake_sign_in_page"]}, headers=player
     )
     assert voted.status_code == 409
     sabotages.remove("sab-start")
@@ -470,17 +594,17 @@ async def test_vote_accepts_a_hand_from_the_players_own_deck(
     red_name = next(name for name, (_, pid) in players.items() if pid in engine.teams["red"])
     voted = await client.post(
         "/api/sabotage/sab-vote/vote",
-        json={"cards": ["cloned_login_page", "urgent_deadline"]},
+        json={"cards": ["fake_sign_in_page", "urgent_deadline"]},
         headers=players[red_name][0],
     )
     assert voted.status_code == 200
     player_id = players[red_name][1]
-    assert engine.votes[player_id] == ["cloned_login_page", "urgent_deadline"]
+    assert engine.votes[player_id] == ["fake_sign_in_page", "urgent_deadline"]
 
     blue_name = next(name for name, (_, pid) in players.items() if pid in engine.teams["blue"])
     refused = await client.post(
         "/api/sabotage/sab-vote/vote",
-        json={"cards": ["prompt_injection"]},
+        json={"cards": ["poison_source"]},
         headers=players[blue_name][0],
     )
     assert refused.status_code == 409

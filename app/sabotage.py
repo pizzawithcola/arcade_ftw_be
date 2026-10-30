@@ -2,8 +2,9 @@
 
 Four rounds, each with its own deck. Every card is a vector over three domains
 (data, people, infra); every round has one target domain. Each team builds a
-hand of up to four cards inside a 100-point budget, and the two builds are
-compared column by column when the round ends.
+hand of up to four cards out of what is left of a single $100,000 budget shared
+across all four rounds, and the two builds are compared column by column when
+the round ends.
 
 The show inside the game:
 
@@ -15,7 +16,7 @@ which is what makes the reveal the first thing a player sees.
 Votes are a set of cards per player. At the end of the select phase the team's
 set is aggregated: most-voted first, ties broken by strength in the round's
 target (never by price, which would reward voting for expensive cards), then
-affordable-first within the budget and the four-card limit. Cards that do not
+whatever the team can still afford within the four-card limit. Cards that do not
 fit are skipped, so a team still gets the best build its votes can pay for.
 """
 
@@ -55,13 +56,17 @@ def aggregate(
     votes: dict[int, list[str]],
     deck: list[str],
     target: str,
-    fill: bool = True,
+    budget: int,
 ) -> tuple[list[str], list[dict]]:
     """Turn a team's votes into one build.
 
+    `budget` is what the team has left after the rounds it has already played,
+    not the match total: the same deck is affordable in round one and out of
+    reach in round four, which is the planning the game is built around.
+
     Returns the chosen cards and a log of what was dropped and why, because
     "I voted for it, why was it not bought" is the one question a player will
-    ask during a 30-second phase.
+    ask during a 35-second phase.
 
     Pure and deterministic, so the tests can pin it.
     """
@@ -90,7 +95,7 @@ def aggregate(
         if len(chosen) >= cfg.MAX_CARDS:
             log.append({"card": card, "reason": "slots"})
             continue
-        if spent + cost > cfg.BUDGET:
+        if spent + cost > budget:
             log.append({"card": card, "reason": "budget"})
             continue
         chosen.append(card)
@@ -157,6 +162,22 @@ class SabotageEngine:
     def deck_for(self, team: str) -> list[str]:
         return cfg.cards_for(self.round, self._role(team))
 
+    def spent(self, team: str) -> int:
+        """What the team has already committed in finished rounds.
+
+        Read back from the history rather than kept in a running total: a
+        counter is one more thing that can drift out of step with the rounds
+        the reveal actually shows.
+        """
+        return sum(
+            entry["attack_cost" if entry["attacker"] == team else "defence_cost"]
+            for entry in self.history
+        )
+
+    def remaining(self, team: str) -> int:
+        """Money still available for the round about to be played."""
+        return max(0, cfg.TOTAL_BUDGET - self.spent(team))
+
     def _duration(self) -> float:
         if self.phase == "select" and self.round == 0:
             return cfg.TIMINGS["select_first"]
@@ -178,7 +199,10 @@ class SabotageEngine:
         end-of-phase fallback: an empty bar is honest about having no votes."""
         spec = self.round_spec()
         return aggregate(
-            self.team_votes(team), self.deck_for(team), spec["target"], fill=False
+            self.team_votes(team),
+            self.deck_for(team),
+            spec["target"],
+            self.remaining(team),
         )
 
     def team_view(self, team: str) -> dict:
@@ -189,6 +213,7 @@ class SabotageEngine:
         keeps the two builds simultaneous until the reveal.
         """
         build, dropped = self.live_build(team)
+        spent = self.spent(team)
         return {
             "team": team,
             "role": self._role(team),
@@ -196,7 +221,13 @@ class SabotageEngine:
             "target": self.round_spec()["target"],
             "deck": self.deck_for(team),
             "build": build,
-            "budget": cfg.BUDGET - cfg.cost_of(build),
+            # Two numbers, two jobs: `round_budget` is what the team walked in
+            # with (so a phone can subtract its own unvoted hand from it), and
+            # `budget` is what is left once the team's build is paid for.
+            "round_budget": cfg.TOTAL_BUDGET - spent,
+            "budget": cfg.TOTAL_BUDGET - spent - cfg.cost_of(build),
+            "spent": spent,
+            "total_budget": cfg.TOTAL_BUDGET,
             "vector": list(cfg.vector_of(build)),
             "votes": self.vote_counts(team),
             "dropped": dropped,
@@ -234,8 +265,10 @@ class SabotageEngine:
             raise SabotageError("card is not in this round's deck")
         if len(unique) > cfg.MAX_CARDS:
             raise SabotageError(f"at most {cfg.MAX_CARDS} cards")
-        if cfg.cost_of(unique) > cfg.BUDGET:
-            raise SabotageError("over budget")
+        left = self.remaining(team)
+        cost = cfg.cost_of(unique)
+        if cost > left:
+            raise SabotageError(f"that hand costs ${cost:,}; ${left:,} is left")
         self.votes[player_id] = unique
 
     def _lock_picks(self) -> None:
@@ -252,6 +285,8 @@ class SabotageEngine:
         defender = spec["defender"]
         attack_vector = cfg.vector_of(self.picks[attacker])
         defence_vector = cfg.vector_of(self.picks[defender])
+        attack_cost = cfg.cost_of(self.picks[attacker])
+        defence_cost = cfg.cost_of(self.picks[defender])
         result = cfg.score_round(attack_vector, defence_vector, spec["target"])
 
         # Nobody bought anything on either side: a void round, not a 600-point
@@ -278,6 +313,10 @@ class SabotageEngine:
             "defence": self.picks[defender],
             "attack_vector": list(attack_vector),
             "defence_vector": list(defence_vector),
+            # What each side put on the table, so the reveal can say what a
+            # round cost as well as what it scored.
+            "attack_cost": attack_cost,
+            "defence_cost": defence_cost,
             "winner": winner,
             "void": void,
             "points": {
@@ -352,9 +391,13 @@ class SabotageEngine:
                 "blue": self.deck_for("blue"),
             },
             "builds": {} if selecting else {team: list(self.picks[team]) for team in TEAMS},
-            "budget": (
-                {} if selecting else {team: cfg.BUDGET - cfg.cost_of(self.picks[team]) for team in TEAMS}
-            ),
+            # Money is public: it is the pressure the whole match is about, and
+            # it says nothing about what either side is buying right now. While
+            # selecting, `spent` covers the finished rounds only, so `budget` is
+            # what the team is playing this round with.
+            "total_budget": cfg.TOTAL_BUDGET,
+            "spent": {team: self.spent(team) for team in TEAMS},
+            "budget": {team: self.remaining(team) for team in TEAMS},
             "vectors": (
                 {} if selecting else {team: list(cfg.vector_of(self.picks[team])) for team in TEAMS}
             ),

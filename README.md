@@ -25,8 +25,8 @@ app/
 ├── roster.py          # 房间成员：加入房间、房间名单、红蓝团队分配（玩家只看到名字）
 ├── players.py         # 管理员用的玩家 / 分数接口（改分、删人级联删分）
 ├── scores.py          # 玩家上报得分：按题幂等，写哪个分项由流程节点决定
-├── sabotage.py        # Sabotage 引擎：红蓝三轮攻防投票 + 状态机 + 投票/启动/状态接口
-├── sabotage_config.py # Sabotage 配置：卡牌、6×6 效果矩阵、剧本、计时（改配置不改代码）
+├── sabotage.py        # Sabotage 引擎：红蓝四轮攻防投票 + 共享预算 + 状态机 + 投票/启动/状态接口
+├── sabotage_config.py # Sabotage 配置：40 张卡、三维向量、四轮剧本、$100,000 共享预算、计时（改配置不改代码）
 ├── ws.py              # WebSocket 端点：连接即推快照，之后同房间扇出
 └── question_types/    # 题型注册表（插件化）
     ├── base.py        # 题型协议
@@ -90,8 +90,9 @@ pytest                        # 集成测试：迁移 + 读写往返
 | `POST /api/players/{id}/score/adjust` | **管理员（full）** | 按增量加/减分（运营纠错用）|
 | `POST /api/me/score` | **玩家** | 上报自己在一题 / 整个节点上得的分数；写哪个分项由节点的 `score` 决定，按 `room:node:question` 幂等 |
 | `POST /api/sabotage/{code}/start` | **管理员（full）** | 用房间当前红蓝分队启动 Sabotage（两队非空），进入 10s 揭晓 |
-| `POST /api/sabotage/{code}/vote` | **玩家** | 投/改自己队伍的卡；只有当前行动方、且卡可投（未 spent、买得起）才接受 |
-| `GET /api/sabotage/{code}/state` | — | 当前阶段、预算、比分、已用卡、可选卡（不暴露个人投票）|
+| `POST /api/sabotage/{code}/vote` | **玩家** | 投/改自己队伍的卡；只收本轮牌库的卡、≤4 张、且不超过队伍剩下的预算 |
+| `GET /api/sabotage/{code}/state` | — | 当前阶段、双方剩余预算（`spent` / `budget`）、比分、本轮牌库（不暴露个人投票）|
+| `GET /api/sabotage/{code}/team` | **玩家** | 自己那一侧的实时手牌 + `round_budget` / `budget`（选卡期不广播，防偷看）|
 | `WS /api/ws?room={code}` | — | 只收推送：连上先推该房间当前状态，之后只扇出给**同房间**的连接 |
 
 > **单人房不跑 Sabotage**：一个玩家无法分成两队，所以主流程到该节点时直接 `go_to(index + 1)` 越过它，该玩家 `sabotage_score` 记为 `cfg.SOLO_SCORE`（2700，完美获胜分）。0 人房保持原行为（不启动、节点照常走完）。细节见 `arcade_ftw_docs/games/sabotage.md`。

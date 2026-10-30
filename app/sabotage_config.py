@@ -2,24 +2,38 @@
 
 Everything here is data, so tuning the game never means touching the engine.
 
-A card carries a vector over three domains - data, people, infra - and costs
-part of the team's 100-point budget. Each round has one *target* domain: only
-that column decides who wins the round; the other two decide how badly. Prices
-are deliberately not a power ranking: a cheap card can be the strongest thing
-in the deck and an expensive one can be a trap, which is what stops "buy the
-dearest card" from being a strategy.
+A card carries a vector over three domains - data, people, infra - and carries
+a price in dollars. Each round has one *target* domain: only that column decides
+who wins the round; the other two decide how badly. Prices are deliberately not
+a power ranking: a cheap card can be the strongest thing in the deck and an
+expensive one can be a trap, which is what stops "buy the dearest card" from
+being a strategy.
 
-Balance rule the tests enforce: under the 100-point budget the best reachable
-target column is exactly one point higher for the attacker than for the
-defender. One point is the whole margin - an attacker who spends badly does not
-break through, and a defender who buys one distraction holds. Re-derive
-`SOLO_SCORE` whenever a vector or a price moves.
+Money is the whole game. A team shares one `TOTAL_BUDGET` across all four
+rounds, so a round cannot be bought on its own: the best hand in each round
+costs about $27,000, four of them cost $108,000, and there is only $100,000.
+Playing all three early rounds at full strength leaves too little for the last
+one, which is the planning pressure the reveal is meant to expose.
+
+Balance rules the tests enforce:
+
+* under an unlimited budget the best reachable target column is exactly one
+  point higher for the attacker than for the defender - one point is the whole
+  margin, so a distracted attacker does not break through and a defender who
+  buys one decoy holds;
+* the cheapest hand that reaches that ceiling costs between $25,000 and $30,000,
+  so a single round cannot swallow the match;
+* the four best hands together cost more than the budget, so the money has to
+  be spent unevenly somewhere.
+
+Re-derive `SOLO_SCORE` whenever a vector or a price moves.
 """
 
 from __future__ import annotations
 
 # --- budget and deck limits ---------------------------------------------------
-BUDGET = 100
+# One pool per team, spent across all four rounds. Amounts are dollars.
+TOTAL_BUDGET = 100_000
 MAX_CARDS = 4
 
 # A room with a single player cannot field two teams; that player is paid the
@@ -39,311 +53,257 @@ DOMAIN_LABEL = {DATA: "Data", PEOPLE: "People", INFRA: "Infra"}
 TIMINGS = {
     "team_reveal": 8,
     "brief": 20,
-    "select": 30,
+    # Choosing now means choosing what to save, so the pick window is a little
+    # longer than a card-a-round game needs.
+    "select": 35,
     # The first round also teaches the interface, so it gets longer.
-    "select_first": 40,
+    "select_first": 50,
     "reveal": 10,
     "final": 20,
 }
 
-# --- cards --------------------------------------------------------------------
-# `vector` is (data, people, infra), each 0-3. `blurb` is one line: the phone
-# screens have no room for more, and a card has to be understood at a glance.
 CARDS: dict[str, dict] = {
-    # round 1 attack: phishing email
-    "cloned_login_page": {
-        "name": "Cloned Login Page",
-        "blurb": "A pixel-perfect copy of the intranet sign-in",
-        "cost": 26,
+    # --- round 1: phishing email (target data) --- attacker
+    "fake_sign_in_page": {
+        "name": "Fake Sign-In Page",
+        "blurb": "A copy of our sign-in page on a look-alike address",
+        "cost": 8_000,
         "vector": (3, 0, 1),
     },
     "malicious_attachment": {
         "name": "Malicious Attachment",
-        "blurb": "An invoice that runs code when opened",
-        "cost": 42,
+        "blurb": "An invoice that installs software when it is opened",
+        "cost": 13_000,
+        "vector": (3, 1, 1),
+    },
+    "personal_details": {
+        "name": "Personal Details",
+        "blurb": "Their name, their manager and their project",
+        "cost": 4_000,
+        "vector": (2, 2, 0),
+    },
+    "fake_sender_name": {
+        "name": "Fake Sender Name",
+        "blurb": "The sender name the employee already trusts",
+        "cost": 2_000,
         "vector": (2, 1, 1),
-    },
-    "personalised_context": {
-        "name": "Personalised Context",
-        "blurb": "Their name, their manager, their project",
-        "cost": 18,
-        "vector": (1, 2, 0),
-    },
-    "spoofed_sender": {
-        "name": "Spoofed Sender",
-        "blurb": "The display name is the one they trust",
-        "cost": 28,
-        "vector": (2, 0, 0),
     },
     "urgent_deadline": {
         "name": "Urgent Deadline",
-        "blurb": "Act before 5pm or the account closes",
-        "cost": 14,
+        "blurb": "The account is closed if it is not acted on before 5pm",
+        "cost": 1_000,
         "vector": (1, 1, 0),
     },
-    "voice_call_followup": {
-        "name": "Voice Call Follow-up",
-        "blurb": "A call from IT to walk them through it",
-        "cost": 30,
-        "vector": (0, 3, 0),
+    # --- round 1: phishing email (target data) --- defender
+    "block_spam": {
+        "name": "Block Spam Emails",
+        "blurb": "Blocks known bad senders and attachments",
+        "cost": 13_000,
+        "vector": (3, 0, 2),
     },
-    # round 1 defence: phishing email
-    "email_gateway": {
-        "name": "Email Gateway Filter",
-        "blurb": "Block known-bad senders and attachments",
-        "cost": 40,
+    "verify_sender": {
+        "name": "Verify the Sender",
+        "blurb": "Checks the real address, not the display name",
+        "cost": 6_000,
         "vector": (3, 0, 1),
+    },
+    "scan_link": {
+        "name": "Scan the Link",
+        "blurb": "Shows where a link leads before it is opened",
+        "cost": 5_000,
+        "vector": (2, 0, 0),
     },
     "security_training": {
         "name": "Security Training",
-        "blurb": "Staff can spot a phish before clicking",
-        "cost": 16,
+        "blurb": "Staff recognise a phishing email before clicking",
+        "cost": 3_000,
         "vector": (1, 2, 0),
     },
-    "verify_sender": {
-        "name": "Verify Sender",
-        "blurb": "Check the real address, not the name",
-        "cost": 26,
-        "vector": (1, 0, 1),
+    "report_phishing": {
+        "name": "Report Phishing",
+        "blurb": "One button, and the mail team takes over",
+        "cost": 2_000,
+        "vector": (1, 1, 1),
     },
-    "hover_before_click": {
-        "name": "Hover Before Click",
-        "blurb": "Read where the link actually goes",
-        "cost": 14,
-        "vector": (1, 0, 0),
-    },
-    "report_suspicious": {
-        "name": "Report Suspicious",
-        "blurb": "One button, and the mail team is on it",
-        "cost": 12,
-        "vector": (0, 1, 1),
-    },
-    "verify_payment": {
-        "name": "Verify Payment",
-        "blurb": "Call finance before any transfer",
-        "cost": 32,
-        "vector": (0, 0, 2),
-    },
-    # round 2 attack: CEO impersonation
-    "deepfake_voice": {
-        "name": "Deepfake Voice Call",
-        "blurb": "Forty seconds of sample is all it needs",
-        "cost": 28,
-        "vector": (1, 3, 0),
-    },
+    # --- round 2: CEO impersonation (target people) --- attacker
     "deepfake_video": {
-        "name": "Deepfake Video",
-        "blurb": "A live-looking call with the CFO",
-        "cost": 38,
-        "vector": (1, 2, 0),
+        "name": "Deepfake Video Call",
+        "blurb": "A live video call with the CEO's face and voice",
+        "cost": 14_000,
+        "vector": (1, 3, 0),
     },
     "urgent_wire": {
         "name": "Urgent Wire Transfer",
-        "blurb": "An acquisition, and it closes tonight",
-        "cost": 18,
-        "vector": (1, 1, 0),
+        "blurb": "An acquisition that closes tonight",
+        "cost": 6_000,
+        "vector": (1, 3, 0),
     },
-    "lookalike_domain": {
-        "name": "Lookalike Domain",
-        "blurb": "Two letters swapped, same logo",
-        "cost": 30,
-        "vector": (2, 0, 0),
-    },
-    "authority_pressure": {
-        "name": "Authority Pressure",
-        "blurb": "Do not escalate this to anyone",
-        "cost": 24,
-        "vector": (0, 2, 0),
-    },
-    "malicious_login": {
-        "name": "Malicious Login Page",
-        "blurb": "Harvest a session token for the replay",
-        "cost": 34,
+    "lookalike_website": {
+        "name": "Lookalike Website",
+        "blurb": "The website is masquerading as legitimate",
+        "cost": 2_000,
         "vector": (2, 0, 1),
     },
-    # round 2 defence: CEO impersonation
-    "payment_approval": {
-        "name": "Payment Approval",
-        "blurb": "Two signatures, no exceptions",
-        "cost": 26,
-        "vector": (1, 1, 0),
-    },
-    "separate_channel": {
-        "name": "Verify Separate Channel",
-        "blurb": "Call back on a number you already had",
-        "cost": 34,
+    "do_not_escalate": {
+        "name": "Do Not Escalate",
+        "blurb": "Coerces employees into not escalating",
+        "cost": 4_000,
         "vector": (0, 2, 0),
     },
+    "vishing_call": {
+        "name": "Vishing Call",
+        "blurb": "A phone call from someone who sounds like the CEO",
+        "cost": 3_000,
+        "vector": (1, 2, 0),
+    },
+    # --- round 2: CEO impersonation (target people) --- defender
+    "callback_verification": {
+        "name": "Callback Verification",
+        "blurb": "Calls back to a verified number",
+        "cost": 9_000,
+        "vector": (0, 3, 0),
+    },
+    "payment_approval": {
+        "name": "Payment Approval",
+        "blurb": "Requires verification and authorisation of the payee",
+        "cost": 7_000,
+        "vector": (1, 2, 0),
+    },
     "verify_identity": {
-        "name": "Verify Identity",
-        "blurb": "Ask something only the real person knows",
-        "cost": 18,
+        "name": "Identity Verification",
+        "blurb": "Validate the caller is who they say they are",
+        "cost": 6_000,
         "vector": (0, 2, 0),
     },
     "escalate_manager": {
-        "name": "Escalate to Manager",
-        "blurb": "Nobody should decide this alone",
-        "cost": 30,
+        "name": "Manager Escalation",
+        "blurb": "Gets a second opinion to verify the request",
+        "cost": 5_000,
         "vector": (0, 2, 1),
     },
-    "check_domain": {
-        "name": "Check Domain Header",
-        "blurb": "Read the header the display hides",
-        "cost": 12,
+    "address_check": {
+        "name": "Hidden Address Check",
+        "blurb": "Reads the address behind the display name",
+        "cost": 2_000,
         "vector": (1, 0, 0),
     },
-    "inspect_link": {
-        "name": "Inspect Link",
-        "blurb": "Open it in a sandbox, never on the laptop",
-        "cost": 40,
-        "vector": (0, 0, 1),
-    },
-    # round 3 attack: AI assistant manipulation
-    "prompt_injection": {
-        "name": "Prompt Injection",
-        "blurb": "Instructions hidden inside a document",
-        "cost": 22,
+    # --- round 3: manipulating the assistant (target infra) --- attacker
+    "malicious_script": {
+        "name": "Malicious AI Script",
+        "blurb": "An instruction buried in a document that the assistant reads",
+        "cost": 9_000,
         "vector": (1, 0, 3),
     },
-    "hidden_instruction": {
-        "name": "Hidden Instruction",
-        "blurb": "White text the model reads and you do not",
-        "cost": 40,
-        "vector": (1, 1, 2),
+    "hidden_script": {
+        "name": "Hidden AI Script",
+        "blurb": "White text the assistant reads and the reviewer does not",
+        "cost": 8_000,
+        "vector": (1, 1, 3),
     },
     "jailbreak": {
-        "name": "Jailbreak",
-        "blurb": "Talk it out of its own guardrails",
-        "cost": 34,
-        "vector": (0, 1, 2),
+        "name": "Jailbreak the Assistant",
+        "blurb": "Persuades the assistant to ignore its safety rules",
+        "cost": 6_000,
+        "vector": (0, 2, 2),
     },
-    "data_exfiltration": {
-        "name": "Data Exfiltration",
-        "blurb": "Make the assistant send its context out",
-        "cost": 28,
-        "vector": (2, 0, 1),
+    "exfiltrate": {
+        "name": "Exfiltrate Data",
+        "blurb": "Makes the assistant send its notes to an outside address",
+        "cost": 4_000,
+        "vector": (2, 0, 2),
     },
-    "false_context": {
-        "name": "False Context",
-        "blurb": "Feed it a rule that is not a rule",
-        "cost": 16,
+    "false_rule": {
+        "name": "False Rule",
+        "blurb": "Gives the assistant a rule that was never approved",
+        "cost": 2_500,
         "vector": (1, 1, 1),
     },
-    "fake_ceo_email": {
-        "name": "Fake CEO Email",
-        "blurb": "The assistant is told the CEO approved",
-        "cost": 30,
-        "vector": (1, 1, 0),
-    },
-    # round 3 defence: AI assistant manipulation
-    "least_privilege": {
-        "name": "Least Privilege",
-        "blurb": "The assistant can read, not wire",
-        "cost": 36,
-        "vector": (1, 0, 2),
-    },
-    "input_sanitisation": {
-        "name": "Input Sanitisation",
-        "blurb": "Strip instructions before they reach it",
-        "cost": 20,
-        "vector": (2, 0, 1),
-    },
-    "output_review": {
-        "name": "Output Review",
-        "blurb": "Nothing leaves without a second look",
-        "cost": 28,
-        "vector": (1, 0, 2),
+    # --- round 3: manipulating the assistant (target infra) --- defender
+    "read_only": {
+        "name": "Read-Only Access",
+        "blurb": "The assistant can read, but cannot act without a person approving it",
+        "cost": 11_000,
+        "vector": (1, 0, 3),
     },
     "human_in_the_loop": {
         "name": "Human in the Loop",
-        "blurb": "A person signs the final action",
-        "cost": 14,
-        "vector": (1, 1, 0),
+        "blurb": "A human reviews the agent's tasks",
+        "cost": 8_000,
+        "vector": (1, 1, 2),
     },
-    "model_guardrails": {
-        "name": "Model Guardrails",
-        "blurb": "Platform rules the prompts cannot override",
-        "cost": 12,
+    "scan_file": {
+        "name": "Scan the File First",
+        "blurb": "Removes hidden instructions before the file is read",
+        "cost": 6_000,
+        "vector": (2, 0, 3),
+    },
+    "assistant_restrictions": {
+        "name": "Assistant Restrictions",
+        "blurb": "Limits the assistant cannot be talked out of",
+        "cost": 2_000,
         "vector": (1, 0, 1),
     },
-    "check_sender": {
-        "name": "Verify Sender",
-        "blurb": "Confirm who actually wrote the request",
-        "cost": 38,
+    "human_approval": {
+        "name": "Human Approval",
+        "blurb": "A person approves the final action",
+        "cost": 1_500,
         "vector": (1, 1, 0),
     },
-    # round 4 attack: knowledge base poisoning
-    "poisoned_faq": {
-        "name": "Poisoned FAQ",
-        "blurb": "One plausible page saying the fee is zero",
-        "cost": 38,
+    # --- round 4: poisoning the assistant's sources (target data) --- attacker
+    "poison_source": {
+        "name": "Poison the Data Source",
+        "blurb": "Malicious script in a trusted data store",
+        "cost": 14_000,
         "vector": (3, 1, 0),
     },
-    "stale_version": {
-        "name": "Stale Version Upload",
-        "blurb": "The 2021 policy, filed as current",
-        "cost": 18,
-        "vector": (2, 0, 1),
+    "insider_edit": {
+        "name": "Malicious Insider Edit",
+        "blurb": "An editor with access and a reason to misuse it",
+        "cost": 7_000,
+        "vector": (3, 2, 0),
     },
-    "insider_contribution": {
-        "name": "Insider Contribution",
-        "blurb": "Someone with edit rights and a grudge",
-        "cost": 26,
-        "vector": (1, 2, 0),
+    "auto_sync": {
+        "name": "Unchecked Auto-Sync",
+        "blurb": "The sync pulls in any page it finds, unchecked",
+        "cost": 4_500,
+        "vector": (0, 0, 2),
     },
-    "auto_ingest": {
-        "name": "Auto-Ingest Crawler",
-        "blurb": "Let the crawler pull in anything it likes",
-        "cost": 44,
-        "vector": (2, 0, 2),
+    "outdated_upload": {
+        "name": "Outdated File Upload",
+        "blurb": "A 2021 policy, uploaded as today's version",
+        "cost": 4_000,
+        "vector": (2, 0, 0),
     },
-    "typosquat_source": {
-        "name": "Typosquatted Source",
-        "blurb": "A source that looks like the regulator",
-        "cost": 12,
-        "vector": (1, 0, 1),
-    },
-    "deepfake_memo": {
-        "name": "Deepfake Memo",
-        "blurb": "A signed memo nobody signed",
-        "cost": 34,
-        "vector": (0, 3, 0),
-    },
-    # round 4 defence: knowledge base poisoning
-    "provenance_check": {
-        "name": "Source Provenance Check",
-        "blurb": "Every chunk traces back to an owner",
-        "cost": 32,
+    # the same card, played again in round 4: one entry, two decks
+    # --- round 4: poisoning the assistant's sources (target data) --- defender
+    "verify_source": {
+        "name": "Verify the Source",
+        "blurb": "Every page traces back to a named owner",
+        "cost": 10_000,
         "vector": (3, 0, 1),
     },
-    "editorial_review": {
-        "name": "Human Editorial Review",
+    "approved_sources": {
+        "name": "Approved Sources Only",
+        "blurb": "Anything unsigned is not published",
+        "cost": 7_000,
+        "vector": (3, 0, 2),
+    },
+    "human_approval_signoff": {
+        "name": "Human Approval",
         "blurb": "A person approves what gets published",
-        "cost": 20,
-        "vector": (1, 2, 0),
+        "cost": 5_000,
+        "vector": (2, 2, 0),
     },
-    "version_pinning": {
-        "name": "Version Pinning",
-        "blurb": "Only the signed revision is live",
-        "cost": 30,
-        "vector": (2, 0, 1),
-    },
-    "ingest_allowlist": {
-        "name": "Ingest Allowlist",
-        "blurb": "The crawler may only read listed domains",
-        "cost": 34,
+    "source_list": {
+        "name": "Approved Source List",
+        "blurb": "The sync reads only the listed websites",
+        "cost": 5_000,
         "vector": (1, 0, 2),
     },
-    "citation_required": {
-        "name": "Citation Required",
-        "blurb": "An answer without a source is not served",
-        "cost": 20,
-        "vector": (1, 0, 0),
-    },
-    "link_inspection": {
-        "name": "Inspect Link",
-        "blurb": "Check the URL before it is trusted",
-        "cost": 38,
+    "source_required": {
+        "name": "Source Required",
+        "blurb": "No verification of the source data, so the agent does not accept it",
+        "cost": 1_500,
         "vector": (0, 0, 1),
     },
 }
@@ -352,7 +312,7 @@ CARDS: dict[str, dict] = {
 # Attack and defence alternate sides so each team attacks exactly twice, which
 # is what keeps the match symmetric: the attacker holds the one-point
 # structural advantage, so an unbalanced schedule would decide the winner before
-# anyone plays.
+# anyone plays. Five cards a side, at most four of them buyable in a round.
 ROUNDS: list[dict] = [
     {
         "round": 1,
@@ -363,20 +323,18 @@ ROUNDS: list[dict] = [
         "attack_brief": "Get a credential out of the organisation.",
         "defence_brief": "Keep the credential inside the organisation.",
         "attack": [
-            "cloned_login_page",
+            "fake_sign_in_page",
             "malicious_attachment",
-            "personalised_context",
-            "spoofed_sender",
+            "personal_details",
+            "fake_sender_name",
             "urgent_deadline",
-            "voice_call_followup",
         ],
         "defence": [
-            "email_gateway",
-            "security_training",
+            "block_spam",
             "verify_sender",
-            "hover_before_click",
-            "report_suspicious",
-            "verify_payment",
+            "scan_link",
+            "security_training",
+            "report_phishing",
         ],
     },
     {
@@ -388,70 +346,64 @@ ROUNDS: list[dict] = [
         "attack_brief": "Get a person to authorise something they should not.",
         "defence_brief": "Make authorisation survive a phone call.",
         "attack": [
-            "deepfake_voice",
             "deepfake_video",
             "urgent_wire",
-            "lookalike_domain",
-            "authority_pressure",
-            "malicious_login",
+            "lookalike_website",
+            "do_not_escalate",
+            "vishing_call",
         ],
         "defence": [
+            "callback_verification",
             "payment_approval",
-            "separate_channel",
             "verify_identity",
             "escalate_manager",
-            "check_domain",
-            "inspect_link",
+            "address_check",
         ],
     },
     {
         "round": 3,
-        "theme": "AI assistant manipulation",
+        "theme": "Manipulating the AI assistant",
         "target": INFRA,
         "attacker": "red",
         "defender": "blue",
         "attack_brief": "Make the assistant do what its instructions forbid.",
         "defence_brief": "Keep the assistant inside its own rules.",
         "attack": [
-            "prompt_injection",
-            "hidden_instruction",
+            "malicious_script",
+            "hidden_script",
             "jailbreak",
-            "data_exfiltration",
-            "false_context",
-            "fake_ceo_email",
+            "exfiltrate",
+            "false_rule",
         ],
         "defence": [
-            "least_privilege",
-            "input_sanitisation",
-            "output_review",
+            "read_only",
             "human_in_the_loop",
-            "model_guardrails",
-            "check_sender",
+            "scan_file",
+            "assistant_restrictions",
+            "human_approval",
         ],
     },
     {
         "round": 4,
-        "theme": "Knowledge base poisoning",
+        "theme": "Poisoning the AI's sources",
         "target": DATA,
         "attacker": "blue",
         "defender": "red",
         "attack_brief": "Make the assistant tell a customer something false.",
         "defence_brief": "Prove every answer came from a trusted source.",
         "attack": [
-            "poisoned_faq",
-            "stale_version",
-            "insider_contribution",
-            "auto_ingest",
-            "typosquat_source",
-            "deepfake_memo",
+            "poison_source",
+            "insider_edit",
+            "auto_sync",
+            "outdated_upload",
+            "lookalike_website",
         ],
         "defence": [
-            "provenance_check",
-            "editorial_review",
-            "version_pinning",
-            "ingest_allowlist",
-            "citation_required",
-            "link_inspection",
+            "verify_source",
+            "approved_sources",
+            "human_approval_signoff",
+            "source_list",
+            "source_required",
         ],
     },
 ]
