@@ -202,11 +202,17 @@ async def room_leaderboard(
     claims: Claims = Depends(require_signed_in),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    """Ranks the room by one section's score, best first.
+    """Ranks the room by its running total, best first.
 
     Open to anyone signed in: the board is shown to the players and the big
     screen at the same moment, so both read the same endpoint. A player without
-    a score row in that section reads as zero.
+    a score row reads as zero.
+
+    Each row carries three numbers, because the standings screen animates
+    through them: `score` is this section's points, `previous` is the standing
+    the player had before this section started, and `total` is what they hold
+    now. The board is ranked by `total`, so the ordering the room sees is the
+    one they will still have when the next section begins.
     """
     column_name = SECTION_COLUMNS.get(section)
     if column_name is None:
@@ -214,21 +220,29 @@ async def room_leaderboard(
     _known_room(code)
 
     score_column = getattr(Score, column_name)
-    order = func.coalesce(score_column, 0)
+    section_score = func.coalesce(score_column, 0)
+    total = func.coalesce(Score.total_score, 0)
     rows = (
         await session.execute(
-            select(Player.nickname, order.label("score"))
+            select(Player.nickname, section_score.label("score"), total.label("total"))
             .outerjoin(Score, Score.player_id == Player.id)
             .where(Player.room_code == code)
-            .order_by(order.desc(), Player.id)
+            .order_by(total.desc(), Player.id)
         )
     ).all()
     return {
         "room": code,
         "section": section,
         "players": [
-            {"rank": index + 1, "nickname": nickname, "score": score}
-            for index, (nickname, score) in enumerate(rows)
+            {
+                "rank": index + 1,
+                "nickname": nickname,
+                "score": score,
+                # Clamped: a re-scored section must not read as a negative base.
+                "previous": max(0, standing - score),
+                "total": standing,
+            }
+            for index, (nickname, score, standing) in enumerate(rows)
         ],
     }
 

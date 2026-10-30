@@ -125,6 +125,65 @@ async def test_room_leaderboard_ranks_one_section(
     ]
     assert [row["score"] for row in board] == [900, 500, 100]
     assert [row["rank"] for row in board] == [1, 2, 3]
+    # Only this section is scored, so the running total equals it and everyone
+    # started from zero - which is what the standings animation counts up from.
+    assert [row["total"] for row in board] == [900, 500, 100]
+    assert [row["previous"] for row in board] == [0, 0, 0]
+
+
+async def test_room_leaderboard_ranks_the_running_total(
+    client: AsyncClient, admin_headers: dict
+) -> None:
+    """The board ranks the total so the order survives into the next section.
+
+    `previous` is what each player held before this section, which is the board
+    the standings screen shows for its first second, before the count-up.
+    """
+    prefix = "lb-run-"
+    room = "lb-run"
+
+    created = await client.post("/api/rooms", json={"code": room}, headers=admin_headers)
+    assert created.status_code == 201
+
+    ids: dict[str, int] = {}
+    for name in ("Behind", "Ahead"):
+        response = await client.post(
+            "/api/auth/player", json={"nickname": f"{prefix}{name}", "event": "hk_employee"}
+        )
+        assert response.status_code == 200
+        ids[name] = response.json()["player_id"]
+        token = response.json()["token"]
+        await client.post(
+            f"/api/rooms/{room}/join", headers={"Authorization": f"Bearer {token}"}
+        )
+
+    # "Behind" trails before the data section, then overtakes inside it: the
+    # ranking flips, which is the move the standings screen has to animate.
+    for name, section, points in (
+        ("Behind", "hallucination_score", 100),
+        ("Ahead", "hallucination_score", 900),
+        ("Behind", "data_score", 900),
+    ):
+        await client.put(
+            f"/api/players/{ids[name]}/score",
+            json={section: points},
+            headers=admin_headers,
+        )
+
+    response = await client.get(
+        f"/api/rooms/{room}/leaderboard?section=data", headers=admin_headers
+    )
+    assert response.status_code == 200
+    board = response.json()["players"]
+
+    # Ranked by the running total, not by the section: 1000 leads 900.
+    behind, ahead = board
+    assert behind["nickname"] == f"{prefix}Behind"
+    assert (behind["previous"], behind["score"], behind["total"]) == (100, 900, 1000)
+    assert behind["rank"] == 1
+    assert behind["previous"] < ahead["previous"], "the flip needs the old order to differ"
+    assert (ahead["previous"], ahead["score"], ahead["total"]) == (900, 0, 900)
+    assert ahead["rank"] == 2
 
 
 async def test_room_leaderboard_rejects_an_unknown_section(

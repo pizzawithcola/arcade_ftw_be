@@ -128,16 +128,30 @@ class Engine:
         # Idle and finished have no clock running, so show the first question
         # rather than whichever one the maths would land on at zero remaining.
         if self.phase not in (Phase.PLAYING, Phase.PAUSED):
-            return {"index": 0, "count": count, "seconds_each": seconds_each, "remaining_ms": 0}
+            return {
+                "index": 0,
+                "count": count,
+                "seconds_each": seconds_each,
+                "remaining_ms": 0,
+                "intro_ms": 0,
+            }
 
         elapsed_ms = max(0.0, duration_ms - remaining * 1000)
+        # A quiz opens with a title card before the first question, so that
+        # stretch of the node is not question time: subtract it before the
+        # division, or every screen is one question behind for the first cycle.
+        intro_ms = float(node.get("intro_sec") or 0) * 1000
+        stage_ms = max(0.0, elapsed_ms - intro_ms)
         each_ms = float(seconds_each) * 1000
-        index = min(count - 1, int(elapsed_ms // each_ms))
+        index = min(count - 1, int(stage_ms // each_ms))
         return {
             "index": index,
             "count": count,
             "seconds_each": seconds_each,
-            "remaining_ms": max(0, int(each_ms - (elapsed_ms - index * each_ms))),
+            "remaining_ms": max(0, int(each_ms - (stage_ms - index * each_ms))),
+            # Still counting down the title card: clients draw the intro
+            # instead of the question for this many milliseconds.
+            "intro_ms": max(0, int(intro_ms - elapsed_ms)),
         }
 
     # ─── lifecycle ────────────────────────────────────────────────────────────

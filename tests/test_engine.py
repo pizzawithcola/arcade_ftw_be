@@ -239,6 +239,7 @@ async def test_the_snapshot_says_which_question_is_on_screen() -> None:
         "count": 2,
         "seconds_each": 2,
         "remaining_ms": 0,
+        "intro_ms": 0,
     }
 
     engine.phase = Phase.PLAYING
@@ -247,6 +248,43 @@ async def test_the_snapshot_says_which_question_is_on_screen() -> None:
     assert engine.snapshot()["question"]["remaining_ms"] > 1000
 
     engine._deadline = time.monotonic() + 1.5  # two and a half seconds in
+    assert engine.snapshot()["question"]["index"] == 1
+
+
+async def test_a_quiz_intro_does_not_shift_the_first_question() -> None:
+    """A title card comes before question one, so the clock must skip it.
+
+    Without the subtraction the big screen would sit on question 1 for the
+    whole intro and then run a full cycle behind every iPad.
+    """
+    engine = Engine(
+        flow=[
+            {
+                "type": "quiz",
+                "duration_sec": 55,
+                "intro_sec": 5,
+                "questions": 2,
+                "seconds_each": 25,
+            }
+        ]
+    )
+    engine.phase = Phase.PLAYING
+
+    # Three seconds into the five-second title card.
+    engine._deadline = time.monotonic() + 52
+    question = engine.snapshot()["question"]
+    assert question["index"] == 0
+    assert 1_000 < question["intro_ms"] <= 3_000
+
+    # Twelve seconds in: seven seconds into question one.
+    engine._deadline = time.monotonic() + 43
+    question = engine.snapshot()["question"]
+    assert question["intro_ms"] == 0
+    assert question["index"] == 0
+    assert 17_000 < question["remaining_ms"] <= 18_000
+
+    # Thirty-two seconds in: two seconds into question two.
+    engine._deadline = time.monotonic() + 23
     assert engine.snapshot()["question"]["index"] == 1
 
 
