@@ -50,16 +50,19 @@ DOMAINS = (DATA, PEOPLE, INFRA)
 DOMAIN_LABEL = {DATA: "Data", PEOPLE: "People", INFRA: "Infra"}
 
 # --- timing, in seconds -------------------------------------------------------
+# The whole match is 160s: 10 draw + 15 rules + 35 first pick + 3 x 25 picks
+# + 4 x 5 reveals + 5 final. The flow slot for this game is a few seconds longer
+# (see flow.py); these are the only numbers the engine counts.
 TIMINGS = {
-    "team_reveal": 8,
-    "brief": 20,
+    "team_reveal": 10,
+    "brief": 15,
     # Choosing now means choosing what to save, so the pick window is a little
     # longer than a card-a-round game needs.
-    "select": 35,
+    "select": 25,
     # The first round also teaches the interface, so it gets longer.
-    "select_first": 50,
-    "reveal": 10,
-    "final": 20,
+    "select_first": 35,
+    "reveal": 5,
+    "final": 5,
 }
 
 CARDS: dict[str, dict] = {
