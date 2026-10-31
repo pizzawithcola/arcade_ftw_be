@@ -30,9 +30,10 @@ from app.rooms import rooms
 
 router = APIRouter(tags=["scores"])
 
-# A single answer is worth tens of points at most. The bound only exists to
-# reject a client bug or a hand-written request worth a whole leaderboard.
-_POINTS_LIMIT = 1_000
+# A single report is one answer (200 worst case) or one whole Data Shadow round
+# (800). The bound only exists to reject a client bug or a hand-written request
+# worth a whole leaderboard, so it sits well above the largest real report.
+_POINTS_LIMIT = 2_000
 
 
 class ScoreReport(BaseModel):

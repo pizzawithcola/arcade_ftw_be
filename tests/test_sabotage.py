@@ -212,8 +212,53 @@ def test_price_is_not_a_power_ranking() -> None:
 
 # --- scoring ------------------------------------------------------------------
 def test_scoring_rows_always_sum_to_the_same_pool() -> None:
+    """One round pays out a fixed pool, so a match always hands over four of them."""
     for attack_points, defence_points in cfg.POINTS.values():
-        assert attack_points + defence_points == 600
+        assert attack_points + defence_points == cfg.ROUND_POINTS_POOL
+
+
+# Rounds whose flank columns are still lopsided, so the guard below only covers
+# the round that was tuned. Namen here rather than silently skipped: measured
+# with random votes, R1 people breaks 79%, R3 people 81%, R4 infra holds 88%.
+LIVE_COLUMN_ROUNDS = (2,)
+
+
+def test_the_tuned_round_has_no_dead_column() -> None:
+    """Every column in round 2 has to be worth arguing about.
+
+    A column whose two sides can only reach 0 and 1 is a coin flip, and a column
+    one side always wins is scenery: the reveal has four sentences per column and
+    would only ever use two of them. Simulated with random votes because the
+    engine buys by target strength, so the ceilings alone do not describe the
+    hands teams actually end up with.
+    """
+    import random
+    from collections import Counter
+
+    from app.sabotage import aggregate
+
+    random.seed(11)
+    for index, spec in enumerate(cfg.ROUNDS):
+        if spec["round"] not in LIVE_COLUMN_ROUNDS:
+            continue
+        attack_deck = cfg.cards_for(index, "attacker")
+        defence_deck = cfg.cards_for(index, "defender")
+        for domain in cfg.DOMAINS:
+            at = cfg.DOMAINS.index(domain)
+            tally: Counter[str] = Counter()
+            for _ in range(400):
+                votes_a = {p: random.sample(attack_deck, random.randint(0, 3)) for p in range(4)}
+                votes_d = {p: random.sample(defence_deck, random.randint(0, 3)) for p in range(4)}
+                a, _ = aggregate(votes_a, attack_deck, spec["target"], cfg.TOTAL_BUDGET)
+                d, _ = aggregate(votes_d, defence_deck, spec["target"], cfg.TOTAL_BUDGET)
+                va = cfg.vector_of(a)[at]
+                vd = cfg.vector_of(d)[at]
+                tally["break" if va > vd else "tie" if va == vd else "hold"] += 1
+            worst, share = tally.most_common(1)[0]
+            assert share / 400 < 0.75, (
+                f"round {spec['round']} {domain} is decided {share * 100 // 400}% of the time "
+                f"by '{worst}' - that column is not a decision"
+            )
 
 
 def test_a_breakthrough_always_scores_more_than_a_held_round() -> None:
@@ -236,12 +281,12 @@ def test_the_design_review_example() -> None:
     on_data = cfg.score_round(attack, defence, cfg.DATA)
     assert on_data["broke_target"] is True
     assert on_data["flanks"] == 0
-    assert (on_data["attack_points"], on_data["defence_points"]) == (320, 280)
+    assert (on_data["attack_points"], on_data["defence_points"]) == cfg.POINTS[(True, 0)]
 
     on_people = cfg.score_round(attack, defence, cfg.PEOPLE)
     assert on_people["broke_target"] is False
     assert on_people["flanks"] == 1
-    assert (on_people["attack_points"], on_people["defence_points"]) == (120, 480)
+    assert (on_people["attack_points"], on_people["defence_points"]) == cfg.POINTS[(False, 1)]
 
 
 def test_a_tie_holds_the_line() -> None:
@@ -255,7 +300,7 @@ def test_every_flank_counts() -> None:
     result = cfg.score_round((9, 9, 9), (0, 0, 0), cfg.DATA)
     assert result["flanks"] == 2
     assert result["outcome"] == "Total compromise"
-    assert (result["attack_points"], result["defence_points"]) == (600, 0)
+    assert (result["attack_points"], result["defence_points"]) == cfg.POINTS[(True, 2)]
 
 
 # --- voting aggregation -------------------------------------------------------
@@ -330,8 +375,12 @@ def test_a_silent_team_buys_nothing() -> None:
     assert log == []
 
 
-def test_a_round_where_nobody_voted_is_void() -> None:
-    """Both sides silent is a wash, not a 600-point gift to the defender."""
+def test_a_round_where_nobody_voted_scores_as_a_defence() -> None:
+    """Nothing bought cannot break a target, so the defender wins the round.
+
+    This used to be a 0-0 wash, which let a team park a round it did not want to
+    play and cost the other side the points it had earned the right to.
+    """
     engine = make_engine()
     engine.start()
     engine.advance()
@@ -340,10 +389,12 @@ def test_a_round_where_nobody_voted_is_void() -> None:
     result = engine.last_result
     assert result is not None
     assert result["void"] is True
-    assert result["outcome"] == "No bids"
-    assert result["winner"] is None
-    assert engine.scores == {"red": 0, "blue": 0}
-    assert engine.rounds_won == {"red": 0, "blue": 0}
+    assert result["outcome"] == "Full defence"
+    spec = engine.round_spec()
+    assert result["winner"] == spec["defender"]
+    assert engine.scores[spec["defender"]] == cfg.ROUND_POINTS_POOL
+    assert engine.scores[spec["attacker"]] == 0
+    assert engine.rounds_won[spec["defender"]] == 1
 
 
 def test_a_side_that_did_not_vote_forfeits_the_round() -> None:
@@ -434,8 +485,10 @@ def test_a_full_show_runs_four_rounds_and_finishes() -> None:
 
     assert engine.phase == "final"
     assert engine.round == len(cfg.ROUNDS) - 1
-    # Four rounds of a 600-point pool: nothing is created or destroyed.
-    assert engine.scores["red"] + engine.scores["blue"] == 600 * len(cfg.ROUNDS)
+    # Four rounds of a fixed pool: nothing is created or destroyed.
+    assert engine.scores["red"] + engine.scores["blue"] == (
+        cfg.ROUND_POINTS_POOL * len(cfg.ROUNDS)
+    )
     assert engine.rounds_won["red"] + engine.rounds_won["blue"] == len(cfg.ROUNDS)
     # Nobody finished the game with money to spare: the pool is the constraint.
     assert engine.remaining("red") == cfg.TOTAL_BUDGET - engine.spent("red")

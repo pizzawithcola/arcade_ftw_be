@@ -39,7 +39,7 @@ MAX_CARDS = 4
 # A room with a single player cannot field two teams; that player is paid the
 # best total a team can reach (four rounds won outright), so the section is
 # never a zero on the leaderboard.
-SOLO_SCORE = 2400
+SOLO_SCORE = 800
 
 # --- domains ------------------------------------------------------------------
 DATA = "data"
@@ -133,19 +133,19 @@ CARDS: dict[str, dict] = {
         "name": "Deepfake Video Call",
         "blurb": "A live video call with the CEO's face and voice",
         "cost": 14_000,
-        "vector": (1, 3, 0),
+        "vector": (1, 3, 2),
     },
     "urgent_wire": {
         "name": "Urgent Wire Transfer",
         "blurb": "An acquisition that closes tonight",
         "cost": 6_000,
-        "vector": (1, 3, 0),
+        "vector": (1, 3, 2),
     },
     "lookalike_website": {
         "name": "Lookalike Website",
         "blurb": "The website is masquerading as legitimate",
         "cost": 2_000,
-        "vector": (2, 0, 1),
+        "vector": (2, 0, 3),
     },
     "do_not_escalate": {
         "name": "Do Not Escalate",
@@ -157,38 +157,38 @@ CARDS: dict[str, dict] = {
         "name": "Vishing Call",
         "blurb": "A phone call from someone who sounds like the CEO",
         "cost": 3_000,
-        "vector": (1, 2, 0),
+        "vector": (1, 2, 1),
     },
     # --- round 2: CEO impersonation (target people) --- defender
     "callback_verification": {
         "name": "Callback Verification",
         "blurb": "Calls back to a verified number",
         "cost": 9_000,
-        "vector": (0, 3, 0),
+        "vector": (0, 3, 1),
     },
     "payment_approval": {
         "name": "Payment Approval",
         "blurb": "Requires verification and authorisation of the payee",
         "cost": 7_000,
-        "vector": (1, 2, 0),
+        "vector": (1, 2, 2),
     },
     "verify_identity": {
         "name": "Identity Verification",
         "blurb": "Validate the caller is who they say they are",
         "cost": 6_000,
-        "vector": (0, 2, 0),
+        "vector": (2, 2, 1),
     },
     "escalate_manager": {
         "name": "Manager Escalation",
         "blurb": "Gets a second opinion to verify the request",
         "cost": 5_000,
-        "vector": (0, 2, 1),
+        "vector": (1, 2, 1),
     },
     "address_check": {
         "name": "Hidden Address Check",
         "blurb": "Reads the address behind the display name",
         "cost": 2_000,
-        "vector": (1, 0, 0),
+        "vector": (1, 0, 2),
     },
     # --- round 3: manipulating the assistant (target infra) --- attacker
     "malicious_script": {
@@ -416,13 +416,20 @@ ROUNDS: list[dict] = [
 # sums to 600, and every breakthrough row beats every held row - so the side
 # that wins the round also scores more, which "count the breaches" did not
 # guarantee.
+# One round hands out this many points in total, split between the two sides -
+# nothing is created or destroyed, so a match always pays out four pools.
+ROUND_POINTS_POOL = 200
+
+# Attacker points are `40 x (flanks + 3 x broke_target)`: a breakthrough is
+# worth three flanks, and the defender gets the rest of the pool. Read the other
+# way round, the defender is paid for every column it holds.
 POINTS: dict[tuple[bool, int], tuple[int, int]] = {
-    (False, 0): (0, 600),
-    (False, 1): (120, 480),
-    (False, 2): (240, 360),
-    (True, 0): (320, 280),
-    (True, 1): (420, 180),
-    (True, 2): (600, 0),
+    (False, 0): (0, 200),
+    (False, 1): (40, 160),
+    (False, 2): (80, 120),
+    (True, 0): (120, 80),
+    (True, 1): (160, 40),
+    (True, 2): (200, 0),
 }
 
 OUTCOME_NAMES: dict[tuple[bool, int], str] = {

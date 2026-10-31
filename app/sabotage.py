@@ -289,20 +289,15 @@ class SabotageEngine:
         defence_cost = cfg.cost_of(self.picks[defender])
         result = cfg.score_round(attack_vector, defence_vector, spec["target"])
 
-        # Nobody bought anything on either side: a void round, not a 600-point
-        # gift to whoever happened to be defending. A single silent side still
-        # forfeits, which is what makes voting mandatory.
+        # Buying nothing cannot break a target, so a round nobody bid on scores
+        # as a defence like any other: the defender keeps the pool. That used to
+        # be a 0-0 wash, which let a team park a round it did not want to play -
+        # and a round nobody plays is still a round somebody failed to win.
         void = not self.picks[attacker] and not self.picks[defender]
-        if void:
-            result["attack_points"] = 0
-            result["defence_points"] = 0
-            result["outcome"] = "No bids"
-            winner = None
-        else:
-            self.scores[attacker] += result["attack_points"]
-            self.scores[defender] += result["defence_points"]
-            winner = attacker if result["broke_target"] else defender
-            self.rounds_won[winner] += 1
+        self.scores[attacker] += result["attack_points"]
+        self.scores[defender] += result["defence_points"]
+        winner = attacker if result["broke_target"] else defender
+        self.rounds_won[winner] += 1
         record = {
             "round": spec["round"],
             "theme": spec["theme"],
