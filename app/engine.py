@@ -111,6 +111,27 @@ class Engine:
             "server_time_ms": int(time.time() * 1000),
         }
 
+    @staticmethod
+    def _quiz_segments(node: dict) -> list[tuple[str, int, float]]:
+        """The round as a line of segments: a bonus card, then its question.
+
+        A bonus question opens with a card saying what it pays, so the round is
+        not five equal cycles. The shape is spelled out here once, from the node's
+        own numbers, because the wall has to land on the same segment as the
+        iPads - the two used to do this sum independently, which is how a card
+        three seconds long would have put the room one question apart.
+        """
+        count = int(node.get("questions") or 0)
+        each_ms = float(node.get("seconds_each") or 0) * 1000
+        card_ms = float(node.get("bonus_intro_sec") or 0) * 1000
+        bonuses = {int(number) for number in (node.get("bonus_questions") or [])}
+        segments: list[tuple[str, int, float]] = []
+        for index in range(count):
+            if card_ms > 0 and (index + 1) in bonuses:
+                segments.append(("bonus", index, card_ms))
+            segments.append(("question", index, each_ms))
+        return segments
+
     def _question(self, remaining: float) -> dict | None:
         """Which question inside the current node is on screen.
 
@@ -134,24 +155,38 @@ class Engine:
                 "seconds_each": seconds_each,
                 "remaining_ms": 0,
                 "intro_ms": 0,
+                "bonus_ms": 0,
             }
 
         elapsed_ms = max(0.0, duration_ms - remaining * 1000)
         # A quiz opens with a title card before the first question, so that
-        # stretch of the node is not question time: subtract it before the
-        # division, or every screen is one question behind for the first cycle.
+        # stretch of the node is not question time: subtract it before walking
+        # the schedule, or every screen is one question behind for that card.
         intro_ms = float(node.get("intro_sec") or 0) * 1000
         stage_ms = max(0.0, elapsed_ms - intro_ms)
         each_ms = float(seconds_each) * 1000
-        index = min(count - 1, int(stage_ms // each_ms))
+
+        segments = self._quiz_segments(node)
+        kind, index, length = segments[-1] if segments else ("question", 0, each_ms)
+        left_ms = 0.0
+        for position, (kind, index, length) in enumerate(segments):
+            if stage_ms < length or position == len(segments) - 1:
+                left_ms = max(0.0, length - stage_ms)
+                break
+            stage_ms -= length
+
         return {
             "index": index,
             "count": count,
             "seconds_each": seconds_each,
-            "remaining_ms": max(0, int(each_ms - (stage_ms - index * each_ms))),
+            # A bonus card is not question time: report a full clock, so nothing
+            # on any screen thinks the answers have closed.
+            "remaining_ms": int(each_ms if kind == "bonus" else left_ms),
             # Still counting down the title card: clients draw the intro
             # instead of the question for this many milliseconds.
             "intro_ms": max(0, int(intro_ms - elapsed_ms)),
+            # Drawing the bonus card for this many milliseconds more.
+            "bonus_ms": int(left_ms) if kind == "bonus" else 0,
         }
 
     # ─── lifecycle ────────────────────────────────────────────────────────────

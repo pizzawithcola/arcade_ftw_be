@@ -132,13 +132,20 @@ ROUND_FLOW: list[dict] = [
     {
         "type": "quiz",
         "title": "Ultimate Quiz",
-        # 5 x (20s answer + 5s verdict) + 3s of closing score. No `intro_sec`:
-        # the first question is on screen from the first second. The five are
-        # drawn on the device from a seed, so the count is fixed and only the
-        # questions vary - the node length never depends on the draw.
-        "duration_sec": 128,
+        # 5 x (20s answer + 5s verdict) + 2 x 3s bonus card + 3s of closing
+        # score. No `intro_sec`: the first question is on screen from the first
+        # second. The five are drawn on the device from a seed, so the count is
+        # fixed and only the questions vary - the node length never depends on
+        # the draw.
+        #
+        # `bonus_questions` is 1-based and has to name the slots the drawing
+        # table multiplies (slots 4 and 5); the iPad warns in development if the
+        # two ever disagree.
+        "duration_sec": 134,
         "questions": 5,
         "seconds_each": 25,
+        "bonus_intro_sec": 3,
+        "bonus_questions": [4, 5],
         "score": "ultimate",
     },
     {

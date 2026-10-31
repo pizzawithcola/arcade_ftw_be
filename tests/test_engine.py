@@ -240,6 +240,7 @@ async def test_the_snapshot_says_which_question_is_on_screen() -> None:
         "seconds_each": 2,
         "remaining_ms": 0,
         "intro_ms": 0,
+        "bonus_ms": 0,
     }
 
     engine.phase = Phase.PLAYING
@@ -249,6 +250,46 @@ async def test_the_snapshot_says_which_question_is_on_screen() -> None:
 
     engine._deadline = time.monotonic() + 1.5  # two and a half seconds in
     assert engine.snapshot()["question"]["index"] == 1
+
+
+async def test_a_bonus_card_does_not_burn_question_time() -> None:
+    """The card in front of a bonus question is not answer time.
+
+    A three second card that the engine counted as question time would close the
+    answers early; counted as nothing at all, every screen after it would be one
+    question behind. The snapshot has to name the question the card introduces,
+    say the card is on screen, and leave the question's clock untouched.
+    """
+    engine = Engine(
+        flow=[
+            {
+                "type": "quiz",
+                "duration_sec": 9,
+                "questions": 2,
+                "seconds_each": 3,
+                "bonus_intro_sec": 3,
+                "bonus_questions": [2],
+            }
+        ]
+    )
+    engine.phase = Phase.PLAYING  # schedule: question 0, card, question 1
+
+    engine._deadline = time.monotonic() + 8.5  # half a second in
+    first = engine.snapshot()["question"]
+    assert first["index"] == 0
+    assert first["bonus_ms"] == 0
+
+    engine._deadline = time.monotonic() + 4.5  # a second and a half onto the card
+    card = engine.snapshot()["question"]
+    assert card["index"] == 1, "the card introduces question two"
+    assert card["bonus_ms"] > 1_000
+    assert card["remaining_ms"] == 3_000, "the question clock has not started"
+
+    engine._deadline = time.monotonic() + 1.0  # a second into question one
+    last = engine.snapshot()["question"]
+    assert last["index"] == 1
+    assert last["bonus_ms"] == 0
+    assert 0 < last["remaining_ms"] <= 2_000
 
 
 async def test_a_quiz_intro_does_not_shift_the_first_question() -> None:
