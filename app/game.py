@@ -27,6 +27,7 @@ from app.manager import manager
 from app.models import Player, Room, RoomParticipant
 from app.rooms import rooms
 from app.sabotage import sabotages
+from app.score_reset import clear_node_scores, clear_room_scores
 
 router = APIRouter(prefix="/rooms", tags=["rooms"])
 
@@ -225,6 +226,13 @@ async def start(code: str, session: AsyncSession = Depends(get_session)) -> dict
     room = await session.get(Room, code)
     if room is not None and room.closed_at is not None:
         raise HTTPException(status_code=409, detail="room is closed; create a new room")
+    # Starting from the top is a new run of the same show: every score from the
+    # previous run is given back, or the board would still hold the rehearsal.
+    # A `start` on a show that is already running is a no-op in the engine, so it
+    # must not wipe the board either.
+    if engine.phase is not Phase.PLAYING:
+        await clear_room_scores(session, code, engine.flow)
+        await session.commit()
     await engine.start()
     return engine.snapshot()
 
@@ -283,22 +291,31 @@ async def finish(code: str, session: AsyncSession = Depends(get_session)) -> dic
     summary="Rewind to an unstarted show at the first node",
     dependencies=[Depends(require_admin)],
 )
-async def reset(code: str) -> dict:
+async def reset(code: str, session: AsyncSession = Depends(get_session)) -> dict:
     engine = _engine(code)
     # Rewinding the show throws away any in-progress Sabotage game too, so a
-    # later jump to node 5 starts it from scratch rather than resuming.
+    # later jump to node 5 starts it from scratch rather than resuming. The
+    # scores go with it: a rewound show is a show that has not been played.
     sabotages.remove(code)
+    await clear_room_scores(session, code, engine.flow)
+    await session.commit()
     await engine.reset()
     return engine.snapshot()
 
 
 @router.post("/{code}/go/{index}", summary="Jump to a node", dependencies=[Depends(require_admin)])
-async def go_to(code: str, index: int) -> dict:
+async def go_to(
+    code: str, index: int, session: AsyncSession = Depends(get_session)
+) -> dict:
     engine = _engine(code)
     # Every jump starts the destination and everything after it afresh: drop the
     # previous Sabotage game so landing on node 5 re-assigns teams and re-runs
     # from team_reveal, however many times the operator rehearses it.
     sabotages.remove(code)
+    # Replaying a node replays its scoring too: the old events are removed so the
+    # new answers are the ones on the board, not the first attempt's.
+    await clear_node_scores(session, code, index, engine.flow)
+    await session.commit()
     try:
         await engine.go_to(index)
     except ValueError as exc:

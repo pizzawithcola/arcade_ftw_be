@@ -67,8 +67,10 @@ ROUND_FLOW: list[dict] = [
         "type": "game",
         "game": "hallucination",
         "title": "Hallucination",
-        # 3 x (20s answer + 5s verdict) + 3s of closing score.
-        "duration_sec": 78,
+        # 3 x (20s answer + 5s verdict). No closing page: the last verdict hands
+        # straight over to the leaderboard, so `closing_sec` is zero here.
+        "duration_sec": 75,
+        "closing_sec": 0,
         "questions": 3,
         "seconds_each": 25,
         "score": "hallucination",

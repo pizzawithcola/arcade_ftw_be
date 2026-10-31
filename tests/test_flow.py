@@ -86,7 +86,12 @@ def test_question_nodes_outlast_their_questions():
             continue
         needed = (node.get("intro_sec") or 0) + node["questions"] * node["seconds_each"]
         tail = node["duration_sec"] - needed
-        assert tail >= MIN_TAIL_SECONDS, f"{node['title']} leaves {tail}s for the closing score"
+        # A round may cut its closing score page on purpose - Hallucination ends
+        # on its last verdict and hands straight to the leaderboard - and says so
+        # with `closing_sec`. Every other round still needs a readable tail.
+        wanted = node.get("closing_sec", MIN_TAIL_SECONDS)
+        assert tail >= wanted, f"{node['title']} leaves {tail}s for the closing score"
+        assert tail >= 0, f"{node['title']} ends mid-question"
 
 
 def test_data_shadow_gives_the_post_eighty_seconds():

@@ -149,6 +149,83 @@ async def test_a_replayed_report_does_not_pay_twice(
     assert count == 2
 
 
+async def test_replaying_a_node_replaces_its_score(
+    client: AsyncClient, admin_headers: dict
+) -> None:
+    """A rehearsed round must overwrite what the last attempt scored.
+
+    A repeat of the same report is still ignored (a retry cannot pay twice), but
+    jumping back to the node wipes the node's events first - so the second run of
+    the round is the run that is on the board.
+    """
+    await _room(client, admin_headers, "score-replay")
+    headers = await _player(client, "Repeater", room="score-replay")
+
+    for question in range(3):
+        await _report(client, headers, "score-replay", HALLUCINATION_GAME, 200, question=question)
+    after_first = (await client.get("/api/players?room=score-replay", headers=admin_headers)).json()
+    assert after_first["players"][0]["score"]["hallucination_score"] == 600
+
+    # Same node, second attempt: the old 600 is given back, then the new answers
+    # score. Only this node's key is touched.
+    jumped = await client.post(
+        f"/api/rooms/score-replay/go/{HALLUCINATION_GAME}", headers=admin_headers
+    )
+    assert jumped.status_code == 200
+
+    empty = (await client.get("/api/players?room=score-replay", headers=admin_headers)).json()
+    assert empty["players"][0]["score"]["hallucination_score"] == 0
+
+    await _report(client, headers, "score-replay", HALLUCINATION_GAME, 100, question=0)
+    again = (await client.get("/api/players?room=score-replay", headers=admin_headers)).json()
+    assert again["players"][0]["score"]["hallucination_score"] == 100
+
+
+async def test_replaying_a_node_leaves_the_other_sections_alone(
+    client: AsyncClient, admin_headers: dict
+) -> None:
+    """Rehearsing Hallucination must not disturb a Data Shadow score."""
+    await _room(client, admin_headers, "score-isolated")
+    headers = await _player(client, "Isolated", room="score-isolated")
+
+    await _report(client, headers, "score-isolated", DATA_SHADOW, 480, question=None)
+    await _report(client, headers, "score-isolated", HALLUCINATION_GAME, 200, question=0)
+    await client.post(f"/api/rooms/score-isolated/go/{HALLUCINATION_GAME}", headers=admin_headers)
+
+    listing = (await client.get("/api/players?room=score-isolated", headers=admin_headers)).json()
+    after = listing["players"][0]
+    assert after["score"]["hallucination_score"] == 0
+    assert after["score"]["data_score"] == 480
+    assert after["total_score"] == 480
+
+
+async def test_starting_the_show_again_clears_every_section(
+    client: AsyncClient, admin_headers: dict
+) -> None:
+    """"From the top" means an empty board, in all four columns."""
+    await _room(client, admin_headers, "score-from-top")
+    headers = await _player(client, "FromTop", room="score-from-top")
+
+    await _report(client, headers, "score-from-top", DATA_SHADOW, 480, question=None)
+    await _report(client, headers, "score-from-top", HALLUCINATION_GAME, -100, question=0)
+    await _report(client, headers, "score-from-top", ULTIMATE_QUIZ, 300, question=4)
+
+    reset = await client.post("/api/rooms/score-from-top/reset", headers=admin_headers)
+    assert reset.status_code == 200
+
+    listing = (await client.get("/api/players?room=score-from-top", headers=admin_headers)).json()
+    after = listing["players"][0]
+    assert after["score"]["hallucination_score"] == 0
+    assert after["score"]["data_score"] == 0
+    assert after["score"]["ultimate_score"] == 0
+    assert after["total_score"] == 0
+
+    # And the next run scores normally, not as a repeat of the cleared events.
+    again = await _report(client, headers, "score-from-top", HALLUCINATION_GAME, 200, question=0)
+    assert again.json()["applied"] is True
+    assert again.json()["hallucination_score"] == 200
+
+
 async def test_negative_points_are_accepted(client: AsyncClient, admin_headers: dict) -> None:
     """Doubt has a negative ceiling, so a wrong trust call must subtract."""
     await _room(client, admin_headers, "score-negative")
