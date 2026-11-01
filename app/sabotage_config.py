@@ -247,7 +247,7 @@ CARDS: dict[str, dict] = {
         "vector": (1, 0, 1),
     },
     "human_approval": {
-        "name": "Human Approval",
+        "name": "Human Overwrite",
         "blurb": "A person approves the final action",
         "cost": 1_500,
         "vector": (1, 1, 0),
