@@ -57,10 +57,12 @@ TIMINGS = {
     "team_reveal": 10,
     "brief": 15,
     # Choosing now means choosing what to save, so the pick window is a little
-    # longer than a card-a-round game needs.
-    "select": 25,
+    # longer than a card-a-round game needs. Ten seconds longer since the room
+    # asked for room to argue: five cards, three columns and a budget is more
+    # reading than a tap.
+    "select": 35,
     # The first round also teaches the interface, so it gets longer.
-    "select_first": 35,
+    "select_first": 45,
     "reveal": 5,
     "final": 5,
 }
@@ -247,7 +249,7 @@ CARDS: dict[str, dict] = {
         "vector": (1, 0, 1),
     },
     "human_approval": {
-        "name": "Human Overwrite",
+        "name": "Human Override",
         "blurb": "A person approves the final action",
         "cost": 1_500,
         "vector": (1, 1, 0),
@@ -280,31 +282,31 @@ CARDS: dict[str, dict] = {
     # the same card, played again in round 4: one entry, two decks
     # --- round 4: poisoning the assistant's sources (target data) --- defender
     "verify_source": {
-        "name": "Verify the Source",
+        "name": "Official Sources Only",
         "blurb": "Every page traces back to a named owner",
         "cost": 10_000,
         "vector": (3, 0, 1),
     },
     "approved_sources": {
-        "name": "Approved Sources Only",
-        "blurb": "Anything unsigned is not published",
+        "name": "Periodic Data Review",
+        "blurb": "Every source is re-checked on a schedule, not once",
         "cost": 7_000,
         "vector": (3, 0, 2),
     },
     "human_approval_signoff": {
-        "name": "Human Approval",
+        "name": "Human Override",
         "blurb": "A person approves what gets published",
         "cost": 5_000,
         "vector": (2, 2, 0),
     },
     "source_list": {
-        "name": "Approved Source List",
+        "name": "White List",
         "blurb": "The sync reads only the listed websites",
         "cost": 5_000,
         "vector": (1, 0, 2),
     },
     "source_required": {
-        "name": "Source Required",
+        "name": "Citation Mandatory",
         "blurb": "No verification of the source data, so the agent does not accept it",
         "cost": 1_500,
         "vector": (0, 0, 1),

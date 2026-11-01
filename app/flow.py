@@ -99,23 +99,25 @@ ROUND_FLOW: list[dict] = [
         "score": "data",
     },
     {"type": "leaderboard", "section": "data", "title": "Data Shadow standings", "duration_sec": 5},
-    # No `opening`: Sabotage draws its teams and then shows its own rules card
-    # inside the node, so a flow-level card would introduce the game twice.
+    # No `opening`: AI Cyber Battle draws its teams and then shows its own rules
+    # card inside the node, so a flow-level card would introduce the game twice.
     {
         "type": "game",
         "game": "sabotage",
-        "title": "Sabotage",
-        # The Sabotage engine runs its own clock (see sabotage_config.TIMINGS:
-        # 10s draw + 15s rules + 35s first pick + 3 x 25s picks + 4 x 5s reveals
-        # + 5s final = 160s); this slot only has to be long enough, and 3s more
-        # so a slow team draw cannot push the last reveal past the cut.
-        "duration_sec": 163,
+        # The name the audience reads. The key stays `sabotage`: it is the
+        # section, the score column and the API path, none of which are copy.
+        "title": "AI Cyber Battle",
+        # The engine runs its own clock (see sabotage_config.TIMINGS: 10s draw +
+        # 15s rules + 45s first pick + 3 x 35s picks + 4 x 5s reveals + 5s final
+        # = 200s); this slot only has to be long enough, and 3s more so a slow
+        # team draw cannot push the last reveal past the cut.
+        "duration_sec": 203,
         "score": "sabotage",
     },
     {
         "type": "leaderboard",
         "section": "sabotage",
-        "title": "Sabotage standings",
+        "title": "AI Cyber Battle standings",
         "duration_sec": 5,
     },
     # No name card is needed separately: the opening carries it. There is also no
