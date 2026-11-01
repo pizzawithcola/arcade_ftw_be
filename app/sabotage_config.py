@@ -290,8 +290,12 @@ CARDS: dict[str, dict] = {
     "approved_sources": {
         "name": "Periodic Data Review",
         "blurb": "Every source is re-checked on a schedule, not once",
-        "cost": 7_000,
-        "vector": (3, 0, 2),
+        # The most expensive thing a team can run: people, on a rota, reading
+        # sources they have already approved. It holds the top data value in the
+        # round and, unlike a one-off check, it keeps the infrastructure clean
+        # while it does - so it is paid for twice over.
+        "cost": 9_000,
+        "vector": (3, 0, 3),
     },
     "human_approval_signoff": {
         "name": "Human Override",

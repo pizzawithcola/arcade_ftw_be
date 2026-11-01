@@ -94,8 +94,8 @@ def test_question_nodes_outlast_their_questions():
         assert tail >= 0, f"{node['title']} ends mid-question"
 
 
-def test_data_shadow_gives_the_post_eighty_seconds():
-    """The round was too short to read a paragraph and sweep it for names.
+def test_data_shadow_gives_the_post_fifty_seconds():
+    """The post is judged a paragraph at a time, so reading it is the whole task.
 
     The opening node carries the same `game` key, so this has to match the node
     the engine actually runs.
@@ -103,9 +103,9 @@ def test_data_shadow_gives_the_post_eighty_seconds():
     node = next(
         node for node in ROUND_FLOW if node["type"] == "game" and node.get("game") == "data_shadow"
     )
-    assert node["duration_sec"] >= 80
+    assert node["duration_sec"] >= 50
     # The answer is withheld until the clock runs out, so the reveal is the tail.
-    assert node["duration_sec"] - 80 >= 10
+    assert node["duration_sec"] - 50 >= 10
 
 
 def test_only_the_ultimate_round_still_has_a_quiz():

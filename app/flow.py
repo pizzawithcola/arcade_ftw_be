@@ -93,9 +93,10 @@ ROUND_FLOW: list[dict] = [
         "type": "game",
         "game": "data_shadow",
         "title": "Data Shadow",
-        # 80s of reading and dragging, plus 10s that reveal what leaked - the
-        # answer is withheld until the clock runs out, so the tail is the game.
-        "duration_sec": 90,
+        # 50s of reading and tapping paragraphs, plus 10s that reveal what
+        # leaked - the answer is withheld until the clock runs out, so the tail
+        # is the game.
+        "duration_sec": 60,
         "score": "data",
     },
     {"type": "leaderboard", "section": "data", "title": "Data Shadow standings", "duration_sec": 5},
