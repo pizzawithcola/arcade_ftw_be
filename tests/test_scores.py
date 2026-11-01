@@ -121,6 +121,64 @@ async def test_each_node_scores_into_its_own_column(
     assert ultimate.json()["total_score"] == 60 + 45 + 20
 
 
+async def test_a_section_never_goes_below_zero(
+    client: AsyncClient, admin_headers: dict
+) -> None:
+    """A wrong answer costs what the section still holds, not points from another game."""
+    await _room(client, admin_headers, "score-floor")
+    headers = await _player(client, "Floor", room="score-floor")
+
+    # Hallucination banks 60, then a wrong bet takes 100 of it: the section keeps
+    # the 60 it has and stops there.
+    for question in range(3):
+        await _report(client, headers, "score-floor", HALLUCINATION_GAME, 20, question=question)
+    floored = await _report(client, headers, "score-floor", HALLUCINATION_GAME, -100, question=3)
+    assert floored.json()["hallucination_score"] == 0
+
+    # A different game's points are never touched by it.
+    await _report(client, headers, "score-floor", DATA_SHADOW, 45, question=None)
+    empty = await _report(client, headers, "score-floor", HALLUCINATION_GAME, -100, question=4)
+    assert empty.json()["hallucination_score"] == 0
+    assert empty.json()["data_score"] == 45
+    assert empty.json()["total_score"] == 45
+
+    # A partial loss only takes what the section has left.
+    await _report(client, headers, "score-floor", HALLUCINATION_GAME, 60, question=5)
+    partial = await _report(client, headers, "score-floor", HALLUCINATION_GAME, -100, question=6)
+    assert partial.json()["hallucination_score"] == 0
+    assert partial.json()["data_score"] == 45
+
+
+async def test_the_ledger_matches_the_column_after_a_floor(
+    client: AsyncClient, admin_headers: dict
+) -> None:
+    """Replaying the node gives back what the column actually lost, not what the
+    client asked for - otherwise the board would hand back points it never took."""
+    await _room(client, admin_headers, "score-ledger")
+    headers = await _player(client, "Ledger", room="score-ledger")
+
+    first = await _report(client, headers, "score-ledger", HALLUCINATION_GAME, 20, question=0)
+    await _report(client, headers, "score-ledger", HALLUCINATION_GAME, -100, question=1)
+    player_id = first.json()["player_id"]
+
+    async with SessionLocal() as session:
+        ledger = await session.scalar(
+            select(func.coalesce(func.sum(ScoreEvent.points), 0)).where(
+                ScoreEvent.player_id == player_id
+            )
+        )
+    # 20 banked, then a 20 loss that could not go past zero: the ledger says 20
+    # was taken away in total, and the column agrees.
+    assert ledger == 0
+
+    jumped = await client.post(
+        f"/api/rooms/score-ledger/go/{HALLUCINATION_GAME}", headers=admin_headers
+    )
+    assert jumped.status_code == 200
+    cleared = await client.get("/api/players?room=score-ledger", headers=admin_headers)
+    assert cleared.json()["players"][0]["total_score"] == 0
+
+
 async def test_a_replayed_report_does_not_pay_twice(
     client: AsyncClient, admin_headers: dict
 ) -> None:
@@ -227,13 +285,21 @@ async def test_starting_the_show_again_clears_every_section(
 
 
 async def test_negative_points_are_accepted(client: AsyncClient, admin_headers: dict) -> None:
-    """Doubt has a negative ceiling, so a wrong trust call must subtract."""
+    """Doubt has a negative ceiling, so a wrong trust call must subtract - as far
+    as the section's floor, and no further."""
     await _room(client, admin_headers, "score-negative")
     headers = await _player(client, "Doubter", room="score-negative")
 
-    response = await _report(client, headers, "score-negative", HALLUCINATION_GAME, -20, question=0)
+    banked = await _report(client, headers, "score-negative", HALLUCINATION_GAME, 80, question=0)
+    assert banked.json()["hallucination_score"] == 80
+
+    response = await _report(client, headers, "score-negative", HALLUCINATION_GAME, -20, question=1)
     assert response.status_code == 200
-    assert response.json()["hallucination_score"] == -20
+    assert response.json()["hallucination_score"] == 60
+
+    # And at zero there is nothing left to take.
+    emptied = await _report(client, headers, "score-negative", HALLUCINATION_GAME, -200, question=2)
+    assert emptied.json()["hallucination_score"] == 0
 
 
 async def test_a_node_without_a_section_is_refused(

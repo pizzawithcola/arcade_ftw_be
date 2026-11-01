@@ -76,13 +76,6 @@ async def report_score(
     if column not in SCORE_FIELDS:  # pragma: no cover - guards a bad mapping
         raise HTTPException(status_code=500, detail="invalid score mapping")
 
-    inserted = await session.execute(
-        pg_insert(ScoreEvent)
-        .values(player_id=player.id, event_key=_event_key(body), points=body.points)
-        .on_conflict_do_nothing()
-    )
-    applied = inserted.rowcount == 1
-
     # Two questions answered within the same instant can both find no row, so
     # the row is created with an upsert rather than get-then-add.
     await session.execute(
@@ -92,8 +85,24 @@ async def report_score(
     if score is None:  # pragma: no cover - the upsert above guarantees the row
         raise HTTPException(status_code=500, detail="score row missing")
 
-    if applied and body.points:
-        setattr(score, column, (getattr(score, column) or 0) + body.points)
+    # A game cannot take the board below zero: a wrong answer at the bottom of a
+    # section costs what is left there, not points from another game. The event
+    # stores what was *applied* rather than what was reported, so the ledger
+    # still sums to the column - `clear_*_scores` subtracts these rows when a
+    # node is replayed, and an event paying -100 into a column that never lost it
+    # would hand 100 back to a player who never had it.
+    current = getattr(score, column) or 0
+    delta = body.points if body.points >= 0 else max(body.points, -current)
+
+    inserted = await session.execute(
+        pg_insert(ScoreEvent)
+        .values(player_id=player.id, event_key=_event_key(body), points=delta)
+        .on_conflict_do_nothing()
+    )
+    applied = inserted.rowcount == 1
+
+    if applied and delta:
+        setattr(score, column, current + delta)
 
     await session.commit()
     await session.refresh(score)
