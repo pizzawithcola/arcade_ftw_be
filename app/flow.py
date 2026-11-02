@@ -41,6 +41,16 @@ The order is deliberate: the name lands first, so the room knows what it is abou
 to play, then the rules, then the game.
 """
 
+# A section board is the only place the room sees the standings move, and a
+# screen that hears about the node a second or two late used to lose most of it.
+# Eight seconds is long enough that a hiccup costs a beat instead of the board.
+BOARD_SECONDS = 8
+
+# Sabotage's slot, from the engine's own clock (sabotage_config.TIMINGS): 10s
+# draw + 15s rules + 45s first pick + 3 x 35s picks + 4 x 8s reveals + 5s final
+# = 212s, plus 3s so a slow team draw cannot push the last reveal past the cut.
+SABOTAGE_SLOT_SECONDS = 215
+
 # Intro - [opening] Hallucination - [opening] Data Shadow - Sabotage
 # - [opening] Ultimate Quiz - Total - Wrap up
 #
@@ -79,7 +89,7 @@ ROUND_FLOW: list[dict] = [
         "type": "leaderboard",
         "section": "hallucination",
         "title": "Hallucination standings",
-        "duration_sec": 5,
+        "duration_sec": BOARD_SECONDS,
     },
     {
         "type": "opening",
@@ -99,7 +109,7 @@ ROUND_FLOW: list[dict] = [
         "duration_sec": 60,
         "score": "data",
     },
-    {"type": "leaderboard", "section": "data", "title": "Data Shadow standings", "duration_sec": 5},
+    {"type": "leaderboard", "section": "data", "title": "Data Shadow standings", "duration_sec": BOARD_SECONDS},
     # No `opening`: AI Cyber Battle draws its teams and then shows its own rules
     # card inside the node, so a flow-level card would introduce the game twice.
     {
@@ -109,17 +119,17 @@ ROUND_FLOW: list[dict] = [
         # section, the score column and the API path, none of which are copy.
         "title": "AI Cyber Battle",
         # The engine runs its own clock (see sabotage_config.TIMINGS: 10s draw +
-        # 15s rules + 45s first pick + 3 x 35s picks + 4 x 5s reveals + 5s final
-        # = 200s); this slot only has to be long enough, and 3s more so a slow
+        # 15s rules + 45s first pick + 3 x 35s picks + 4 x 8s reveals + 5s final
+        # = 212s); this slot only has to be long enough, and 3s more so a slow
         # team draw cannot push the last reveal past the cut.
-        "duration_sec": 203,
+        "duration_sec": SABOTAGE_SLOT_SECONDS,
         "score": "sabotage",
     },
     {
         "type": "leaderboard",
         "section": "sabotage",
         "title": "AI Cyber Battle standings",
-        "duration_sec": 5,
+        "duration_sec": BOARD_SECONDS,
     },
     # No name card is needed separately: the opening carries it. There is also no
     # section leaderboard after the quiz - its scores land on the activity board,
