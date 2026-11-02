@@ -225,10 +225,13 @@ async def _player_from_token(token: str | None, event: str, session: AsyncSessio
 
 
 async def free_nickname(nickname: str, event: str, session: AsyncSession) -> str:
-    """First free `nickname`, `nickname (2)`, `nickname (3)`…
+    """First free `nickname`, `nickname2`, `nickname3`…
 
     Players bring their own device now, so two people really can both be "Alex".
-    Numbering keeps them apart instead of silently merging two scoreboards.
+    Numbering keeps them apart instead of silently merging two scoreboards. The
+    number is run straight onto the name rather than bracketed: it is read off a
+    leaderboard from five metres away, and "Alex2" survives that where "Alex (2)"
+    turns into a smudge.
     """
     candidate = nickname
     suffix = 2
@@ -237,9 +240,9 @@ async def free_nickname(nickname: str, event: str, session: AsyncSession) -> str
             select(Player.id).where(Player.nickname == candidate, Player.event == event)
         )
     ).scalar_one_or_none() is not None:
-        room = f" ({suffix})"
-        base = nickname[: 64 - len(room)]
-        candidate = f"{base}{room}"
+        tail = str(suffix)
+        base = nickname[: 64 - len(tail)]
+        candidate = f"{base}{tail}"
         suffix += 1
     return candidate
 

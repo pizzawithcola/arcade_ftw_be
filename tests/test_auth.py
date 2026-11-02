@@ -272,7 +272,7 @@ async def test_two_people_with_the_same_nickname_get_numbered(client: AsyncClien
     second = await client.post("/api/auth/player", json=payload)
 
     assert first.json()["nickname"] == "Alex"
-    assert second.json()["nickname"] == "Alex (2)"
+    assert second.json()["nickname"] == "Alex2"
     assert first.json()["player_id"] != second.json()["player_id"]
 
 
@@ -280,7 +280,7 @@ async def test_a_returning_device_keeps_its_own_row(client: AsyncClient) -> None
     """Re-login with the old token is the same person, even after a name clash."""
     payload = {"nickname": "Robin", "event": "hk_employee"}
     first = await client.post("/api/auth/player", json=payload)
-    await client.post("/api/auth/player", json=payload)  # someone else takes Robin (2)
+    await client.post("/api/auth/player", json=payload)  # someone else takes Robin2
 
     again = await client.post(
         "/api/auth/player", json={**payload, "token": first.json()["token"]}

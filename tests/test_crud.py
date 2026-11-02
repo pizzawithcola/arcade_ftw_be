@@ -211,7 +211,7 @@ async def test_a_manually_added_nickname_is_numbered_when_taken(
     names = [entry["nickname"] for entry in (
         await client.get("/api/rooms/crud-dupname/players", headers=admin_headers)
     ).json()["players"]]
-    assert names == ["Twin", "Twin (2)"]
+    assert names == ["Twin", "Twin2"]
 
 
 async def test_adding_a_player_needs_a_full_admin_and_a_real_room(
