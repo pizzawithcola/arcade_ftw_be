@@ -68,19 +68,18 @@ pytest                        # 集成测试：迁移 + 读写往返
 | `POST /api/auth/player` | — | 昵称 + 活动登录；带旧令牌认回本人，否则重名自动编号（`Alex` → `Alex (2)`），返回令牌 |
 | `GET /api/auth/events` | — | 可参加的活动列表；**登录页下拉框的数据源** |
 | `POST /api/auth/admin` | — | 管理员用户名 + 密码登录，返回令牌 |
-| `GET /api/auth/me` | Bearer | 这个令牌是谁 |
-| `GET /api/rooms` | **display** | `{current, rooms}`：房间按新到旧，`current` 是最近创建的那一轮；含状态、`label` / `event`、已加入人数、在线连接数 |
+| `GET /api/auth/me` | **已登录** | 返回当前令牌对应的身份、权限与玩家队伍信息 |
+| `GET /api/rooms` | **display** | `{current, rooms}`：房间按新到旧；`current` 是最新未关闭房间，列表含流程状态、已加入人数与在线连接数 |
 | `GET /api/rooms/{code}/state` | — | 该房间的 phase / 节点 / 剩余毫秒 |
-| `POST /api/rooms/{code}/start` \| `pause` \| `resume` \| `finish` | **管理员（full）** | 播放控制；`finish` 结束本轮并**清空房间成员**（`room_code`/`team` 置空），`start` 重开即为空房间 |
+| `POST /api/rooms/{code}/start` \| `pause` \| `resume` \| `finish` | **管理员（full）** | 播放控制；非运行中调用 `start` 会从第 0 个节点重新开始并清空本轮分数；`finish` 结束本轮、关闭房间并清空成员绑定（`room_code`/`team` 置空） |
 | `POST /api/rooms/{code}/go/{index}` | **管理员（full）** | 跳到任意节点（也是从 `finished` / `idle` 复活的方式）|
 | `POST /api/rooms/{code}/reset` | **管理员（full）** | 回到 `idle` 未开演态、第 1 节点、时钟停止（排练后交台）|
 | `POST /api/rooms/{code}/join` | **玩家** | 把当前玩家记入该房间（每次进页面都调，重连后仍在原房间）|
 | `GET /api/rooms/{code}/players` | **已登录** | 房间名单，按总分倒序。admin/display 得到 `player_id/event/team/total_score`，玩家**只得到昵称**（等待室用）|
 | `POST /api/rooms/{code}/teams/assign` | **管理员（full）** | Sabotage 分队：按 id 交替均分红蓝，可重跑（幂等、确定性）；join 进新房间会清掉旧 team |
 | `GET /api/rooms/current` | — | 当前轮的 `{code, phase}`；**玩家端靠它跟随当前轮**（只暴露这两个字段）|
-| `POST /api/rooms` | **管理员（full）** | 开新一轮：code 可省略（自动 `round-N`），写库并**立刻建引擎**（否则刚拿到的房间码打开是 404）|
-| `GET /api/rooms/{code}` | **display** | 单个房间的元信息 + 状态 |
-| `PATCH /api/rooms/{code}` | **管理员（full）** | 改 `event` / `label`；**不支持改 code**（code 已在 URL、`/r/{code}` 排障链接和玩家归属里）|
+| `POST /api/rooms` | **管理员（full）** | 开新一轮：code 可省略（自动 `R-001` 格式），写库并**立刻建引擎**（否则刚拿到的房间码打开是 404）|
+| `GET /api/rooms/{code}` | **display** | 单个房间的 code、创建/关闭时间与流程状态 |
 | `DELETE /api/rooms/{code}` | **管理员（full）** | 删房间；**进行中（playing/paused）拒绝删除**（409）。成员由 DB 置空，不删人 |
 | `POST /api/rooms/{code}/players` | **管理员（full）** | 替玩家建成员（设备掉了也照样在名单上），重名自动编号 |
 | `GET /api/players` \| `GET /api/players/{id}` | **display** | 查玩家（可 `?room=` / `?event=` 过滤），带 `total_score` 与四个分项 |
@@ -95,7 +94,7 @@ pytest                        # 集成测试：迁移 + 读写往返
 | `GET /api/sabotage/{code}/team` | **玩家** | 自己那一侧的实时手牌 + `round_budget` / `budget`（选卡期不广播，防偷看）|
 | `WS /api/ws?room={code}` | — | 只收推送：连上先推该房间当前状态，之后只扇出给**同房间**的连接 |
 
-> **单人房不跑 Sabotage**：一个玩家无法分成两队，所以主流程到该节点时直接 `go_to(index + 1)` 越过它，该玩家 `sabotage_score` 记为 `cfg.SOLO_SCORE`（2700，完美获胜分）。0 人房保持原行为（不启动、节点照常走完）。细节见 `arcade_ftw_docs/games/sabotage.md`。
+> **单人房不跑 Sabotage**：一个玩家无法分成两队，所以主流程到该节点时直接 `go_to(index + 1)` 越过它，该玩家 `sabotage_score` 记为 `cfg.SOLO_SCORE`（800，四轮满分）。0 人房保持原行为（不启动、节点照常走完）。细节见 `arcade_ftw_docs/games/sabotage-v2.md`。
 
 管理员控制走 **HTTP 而不是 WS**：可鉴权、能在 `/api/docs` 里直接点、失败返回真实状态码；状态变化再由 WS 广播给所有人。
 
@@ -125,12 +124,12 @@ pytest                        # 集成测试：迁移 + 读写往返
 ## 数据库
 
 - **schema 只由 Alembic 迁移创建**，应用启动不建表。新增改动：`alembic revision --autogenerate -m "..."` → 检查生成的脚本 → `alembic upgrade head`。
-- 四张表：`rooms(code PK, event, label, created_at)`、`players(..., room_code → rooms.code ON DELETE SET NULL, team red/blue 可空)`、`scores(player_id PK, 四个分项 + 生成列 total_score)`、`score_events(player_id + event_key PK, points)`（上报幂等记录）。
+- 五张表：`rooms(code PK, event nullable, created_at, closed_at)`、`players(..., room_code → rooms.code ON DELETE SET NULL, team red/blue 可空)`、`scores(player_id PK, 四个分项 + 生成列 total_score)`、`score_events(player_id + event_key PK, points)`（上报幂等记录）、`room_participants(room_code + player_id PK)`（房间参与历史）。
 - 计分是**宽表**（四个游戏各一列 + 数据库生成列 `total_score`），不是长表——被问的查询是「按 total 排名」。加第五个游戏需要一次迁移。
 - **房间是数据**：`rooms` 表是房间的真相来源，`alembic` 迁移里 seed 了 `main`。启动时 `rooms.load()` 读库建引擎；**读库失败只警告并退回默认房间**，否则 DB 抖动会让任务启动失败、被 ALB 反复重启，把内存里的节目全清掉。
 - `players.room_code` 可空：登录就建行，**进房间**才写归属（`POST /api/rooms/{code}/join`）。删房间只会把成员置空，不会删人。
 - `scores` 属于玩家（`ON DELETE CASCADE`）：**删玩家就删分**，不需要应用层清理，也不会有分数挂在已删的人上。`total_score` 是生成列，接口**只接受四个分项**——直接写 total 会被 pydantic 忽略，库里也会拒。
-- **四个分项 = 四个分区**（`hallucination + quiz1`、`data + quiz2`、`sabotage`、`ultimate`），节点在 `flow.py` 用 `score` 声明归属。
+- **四个分项 = 四个分区**（`hallucination`、`data`、`sabotage`、`ultimate`），节点在 `flow.py` 用 `score` 声明归属。
 - `score_events` 是分数上报的幂等键：`(player_id, event_key)` 冲突时插入无效，只有真正插入的那条才累加分数。
 - `/health` **刻意不碰数据库**（ALB 用它探活，DB 抖动不该重启任务、清空内存房间）；数据库状态看 `/health/db`。
 - 测试会**先 DROP SCHEMA 再用迁移重建**，所以绝不能指向真实库——请只对 `docker-compose` 起的本地库运行 `pytest`。

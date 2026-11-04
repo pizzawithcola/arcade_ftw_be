@@ -47,9 +47,9 @@ to play, then the rules, then the game.
 BOARD_SECONDS = 8
 
 # Sabotage's slot, from the engine's own clock (sabotage_config.TIMINGS): 10s
-# draw + 15s rules + 45s first pick + 3 x 35s picks + 4 x 8s reveals + 5s final
-# = 212s, plus 3s so a slow team draw cannot push the last reveal past the cut.
-SABOTAGE_SLOT_SECONDS = 215
+# draw + 15s rules + 40s first pick + 3 x 30s picks + 4 x 8s reveals + 5s final
+# = 192s, plus 3s so a slow team draw cannot push the last reveal past the cut.
+SABOTAGE_SLOT_SECONDS = 195
 
 # Intro - [opening] Hallucination - [opening] Data Shadow - Sabotage
 # - [opening] Ultimate Quiz - Total - Wrap up
@@ -119,8 +119,8 @@ ROUND_FLOW: list[dict] = [
         # section, the score column and the API path, none of which are copy.
         "title": "AI Cyber Battle",
         # The engine runs its own clock (see sabotage_config.TIMINGS: 10s draw +
-        # 15s rules + 45s first pick + 3 x 35s picks + 4 x 8s reveals + 5s final
-        # = 212s); this slot only has to be long enough, and 3s more so a slow
+        # 15s rules + 40s first pick + 3 x 30s picks + 4 x 8s reveals + 5s final
+        # = 192s); this slot only has to be long enough, and 3s more so a slow
         # team draw cannot push the last reveal past the cut.
         "duration_sec": SABOTAGE_SLOT_SECONDS,
         "score": "sabotage",
