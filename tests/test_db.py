@@ -61,7 +61,7 @@ async def test_total_is_the_sum_of_the_four_games() -> None:
 async def test_the_database_refuses_to_store_a_wrong_total() -> None:
     """Generated in the database, so app code cannot drift from the rule."""
     async with SessionLocal() as session:
-        player = Player(nickname="generated-tester", event="sg_employee")
+        player = Player(nickname="generated-tester", event="hk_fintech_week")
         session.add(player)
         await session.flush()
         await session.commit()
@@ -82,7 +82,7 @@ async def test_the_database_refuses_to_store_a_wrong_total() -> None:
 async def test_a_player_has_at_most_one_score_row() -> None:
     """player_id is the primary key now, not half of a composite."""
     async with SessionLocal() as session:
-        player = Player(nickname="one-row-tester", event="sg_employee")
+        player = Player(nickname="one-row-tester", event="hk_fintech_week")
         session.add(player)
         await session.flush()
         session.add(Score(player_id=player.id, data_score=10))

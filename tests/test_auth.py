@@ -78,7 +78,7 @@ async def test_the_same_nickname_at_two_events_is_two_players(client: AsyncClien
         "/api/auth/player", json={"nickname": "same-name", "event": "hk_employee"}
     )
     there = await client.post(
-        "/api/auth/player", json={"nickname": "same-name", "event": "sg_employee"}
+        "/api/auth/player", json={"nickname": "same-name", "event": "sg_fintech_week"}
     )
 
     assert here.json()["player_id"] != there.json()["player_id"]
@@ -104,7 +104,6 @@ async def test_the_events_endpoint_lists_every_selectable_event(client: AsyncCli
         "hk_fintech_week",
         "hk_employee",
         "sg_fintech_week",
-        "sg_employee",
     ]
     # The dropdown needs something to show; the key alone would be unreadable.
     assert all(event["label"] for event in events)

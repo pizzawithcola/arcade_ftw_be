@@ -114,7 +114,7 @@ def test_only_the_ultimate_round_still_has_a_quiz():
     quizzes = [node for node in ROUND_FLOW if node["type"] == "quiz"]
     assert len(quizzes) == 1
     assert quizzes[0]["score"] == "ultimate"
-    assert quizzes[0]["questions"] == 5
+    assert quizzes[0]["questions"] == 3
 
 
 def test_no_quiz_opens_on_a_title_card():

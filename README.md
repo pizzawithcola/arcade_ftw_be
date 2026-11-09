@@ -1,6 +1,6 @@
 # arcade_ftw_be
 
-Arcade FTW 后端（FastAPI + Python 3.12）。与现有 `cyber_ai_festival_be` 完全隔离。
+Arcade Fintech Festival 后端（FastAPI + Python 3.12）。与现有 `cyber_ai_festival_be` 完全隔离。
 
 > 跨项目文档（系统手册 / WS 协议 / 题型契约 / AWS）见 [`../arcade_ftw_docs`](../arcade_ftw_docs)。
 
@@ -102,7 +102,7 @@ pytest                        # 集成测试：迁移 + 读写往返
 
 活动列表的**唯一来源**是 `app/events.py`，它同时驱动 `GET /api/auth/events` 与登录校验——所以新增活动是**纯后端改动**，下拉框下次加载就自动带上。
 
-四个可选活动键：`hk_fintech_week`、`hk_employee`、`sg_fintech_week`、`sg_employee`。
+三个可选活动键：`hk_fintech_week`（HK Fintech Week）、`hk_employee`（HK Employee Week）、`sg_fintech_week`（Singapore Fintech Festival）。`sg_employee` 已下线，登录与后台改动都不再接受这个键；库里若还有该键的历史行，只能读取、不能新增或改回。
 
 **玩家身份是 `(event, nickname)` 而不是昵称**：同名但参加不同活动算**两个玩家**。否则两个恰好同名的真实用户会被合并成一行、共用一个记分板。
 

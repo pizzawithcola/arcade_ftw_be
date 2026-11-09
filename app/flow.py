@@ -77,12 +77,12 @@ ROUND_FLOW: list[dict] = [
         "type": "game",
         "game": "hallucination",
         "title": "Hallucination",
-        # 3 x (20s answer + 5s verdict). No closing page: the last verdict hands
+        # 3 x (25s answer + 5s verdict). No closing page: the last verdict hands
         # straight over to the leaderboard, so `closing_sec` is zero here.
-        "duration_sec": 75,
+        "duration_sec": 90,
         "closing_sec": 0,
         "questions": 3,
-        "seconds_each": 25,
+        "seconds_each": 30,
         "score": "hallucination",
     },
     {
@@ -145,20 +145,20 @@ ROUND_FLOW: list[dict] = [
     {
         "type": "quiz",
         "title": "Ultimate Quiz",
-        # 5 x (20s answer + 5s verdict) + 2 x 3s bonus card + 3s of closing
+        # 3 x (20s answer + 5s verdict) + 2 x 3s bonus card + 3s of closing
         # score. No `intro_sec`: the first question is on screen from the first
-        # second. The five are drawn on the device from a seed, so the count is
+        # second. The three are drawn on the device from a seed, so the count is
         # fixed and only the questions vary - the node length never depends on
         # the draw.
         #
         # `bonus_questions` is 1-based and has to name the slots the drawing
-        # table multiplies (slots 4 and 5); the iPad warns in development if the
+        # table multiplies (slots 2 and 3); the iPad warns in development if the
         # two ever disagree.
-        "duration_sec": 134,
-        "questions": 5,
+        "duration_sec": 84,
+        "questions": 3,
         "seconds_each": 25,
         "bonus_intro_sec": 3,
-        "bonus_questions": [4, 5],
+        "bonus_questions": [2, 3],
         "score": "ultimate",
     },
     {

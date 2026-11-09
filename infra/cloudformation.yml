@@ -1,6 +1,6 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Description: >
-  Arcade FTW - Backend infrastructure (scope: backend only).
+  Arcade Fintech Festival - Backend infrastructure (scope: backend only).
   Creates: ECR repository, ALB + Target Group, ECS Fargate cluster/service/task,
   security groups, IAM roles, CloudWatch log group.
   NOT included on purpose: VPC/subnets (shared with the legacy stack - passed in as

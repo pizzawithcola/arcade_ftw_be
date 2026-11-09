@@ -45,7 +45,7 @@ async def test_a_new_room_is_playable_immediately(
     was just told to open would answer 404."""
     created = await client.post(
         "/api/rooms",
-        json={"code": "crud-alpha", "event": "sg_employee", "label": "Alpha"},
+        json={"code": "crud-alpha", "event": "sg_fintech_week", "label": "Alpha"},
         headers=admin_headers,
     )
     assert created.status_code == 201
@@ -260,10 +260,10 @@ async def test_a_player_can_be_renamed_and_moved(
     assert patched.json()["room_code"] == "crud-move"
 
     # An explicit null takes them out of the room; omitting the field must not.
-    await client.patch(f"/api/players/{player_id}", json={"event": "sg_employee"}, headers=admin_headers)
+    await client.patch(f"/api/players/{player_id}", json={"event": "hk_employee"}, headers=admin_headers)
     still = await client.get(f"/api/players/{player_id}", headers=admin_headers)
     assert still.json()["room_code"] == "crud-move"
-    assert still.json()["event"] == "sg_employee"
+    assert still.json()["event"] == "hk_employee"
 
     cleared = await client.patch(
         f"/api/players/{player_id}", json={"room_code": None}, headers=admin_headers

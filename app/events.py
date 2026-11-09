@@ -12,10 +12,9 @@ picks it up on the next page load.
 from __future__ import annotations
 
 EVENTS: list[dict[str, str]] = [
-    {"key": "hk_fintech_week", "label": "Hong Kong Fintech Week"},
-    {"key": "hk_employee", "label": "Hong Kong Employee"},
-    {"key": "sg_fintech_week", "label": "Singapore Fintech Week"},
-    {"key": "sg_employee", "label": "Singapore Employee"},
+    {"key": "hk_fintech_week", "label": "HK Fintech Week"},
+    {"key": "hk_employee", "label": "HK Employee Week"},
+    {"key": "sg_fintech_week", "label": "Singapore Fintech Festival"},
 ]
 
 EVENT_KEYS: frozenset[str] = frozenset(event["key"] for event in EVENTS)
