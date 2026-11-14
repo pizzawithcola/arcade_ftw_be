@@ -25,6 +25,7 @@ from app.database import get_session
 from app.engine import Engine, Phase
 from app.manager import manager
 from app.models import Player, Room, RoomParticipant
+from app.flow import MODULES, build_flow
 from app.rooms import rooms
 from app.sabotage import sabotages
 from app.score_reset import clear_node_scores, clear_room_scores
@@ -93,6 +94,9 @@ class NewRoom(BaseModel):
     # Blank means "give me the next R-001". A room is one-shot and carries no
     # other metadata: the code and its creation time are the whole identity.
     code: str | None = None
+    # Which modules the show runs. Omitted means all of them, so a caller that
+    # predates this field creates exactly the room it always did.
+    modules: list[str] | None = None
 
 
 @router.post("", status_code=201, summary="Create a room for the next round")
@@ -115,15 +119,45 @@ async def create_room(
         )
     if code in codes:
         raise HTTPException(status_code=409, detail=f"room already exists: {code}")
+    modules = _clean_modules(body.modules)
 
-    room = Room(code=code)
+    room = Room(code=code, modules=",".join(modules) if modules else None)
     session.add(room)
     await session.commit()
     await session.refresh(room)
     # The engine is built before answering, so a client that immediately opens
     # the room URL does not get a 404 for a room that was just created.
-    rooms.ensure(code)
+    rooms.ensure(code, modules)
     return _room_body(room, rooms.get(code))
+
+
+def _clean_modules(modules: list[str] | None) -> list[str] | None:
+    """Validate the requested set, keeping the show's own order.
+
+    Two things are refused rather than quietly corrected, because either would
+    produce a show nobody meant to run:
+
+    * an unknown key - a typo would otherwise hide a game by accident;
+    * a set that leaves no nodes at all - the engine would finish on its first
+      tick, so every screen would sit on a wrap-up for a show that never ran.
+
+    Order comes from `MODULES`, not from the request, so the rundown reads the
+    same however the caller listed them.
+    """
+    if modules is None:
+        return None
+    unknown = sorted(set(modules) - set(MODULES))
+    if unknown:
+        raise HTTPException(
+            status_code=422,
+            detail=f"unknown module(s): {', '.join(unknown)}",
+        )
+    chosen = [module for module in MODULES if module in set(modules)]
+    if not chosen:
+        raise HTTPException(status_code=422, detail="a room needs at least one module")
+    if not build_flow(chosen):
+        raise HTTPException(status_code=422, detail="that module set builds an empty show")
+    return chosen
 
 
 def _next_room_code(codes: list[str]) -> str:
@@ -206,6 +240,7 @@ def _room_body(room: Room, engine: Engine | None) -> dict:
         "code": room.code,
         "created_at": created.isoformat() if isinstance(created, datetime) else created,
         "closed_at": closed.isoformat() if isinstance(closed, datetime) else closed,
+        "modules": room.module_list,
         "state": engine.snapshot() if engine is not None else None,
     }
 

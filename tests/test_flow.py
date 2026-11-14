@@ -1,6 +1,6 @@
 """The rundown itself: every game is introduced, and the openings cost a slot."""
 
-from app.flow import ROUND_FLOW
+from app.flow import MODULES, ROUND_FLOW, build_flow
 
 # (opening key, the node it introduces, the section it scores into)
 # Sabotage is the exception: it draws its teams and then shows its own rules
@@ -136,3 +136,91 @@ def test_the_welcome_outlasts_its_own_reveal():
     intro = ROUND_FLOW[0]
     assert intro["type"] == "intro"
     assert intro["duration_sec"] >= 5
+
+
+# ─── modules: what a room is built from ───────────────────────────────────────
+
+
+def test_every_node_names_its_module():
+    """A node without `requires` would appear in every room, hidden or not.
+
+    Declaring the key on the node (instead of letting `build_flow` guess it from
+    `game` / `section`) is only worth it while this test holds: a new node that
+    forgets to name its module fails here rather than turning up in a show that
+    asked for it to be left out.
+    """
+    for node in ROUND_FLOW:
+        module = node.get("requires")
+        assert module in MODULES, f"{node['title']} names module {module!r}"
+
+
+def test_a_room_with_no_module_choice_gets_the_whole_show():
+    """None means all seven: a room created before modules existed keeps playing
+    the same thirteen nodes it always did."""
+    assert build_flow() == ROUND_FLOW
+    assert len(build_flow()) == 13
+
+
+def test_hiding_a_game_takes_its_rules_and_its_board_with_it():
+    """The three nodes of a game share one module, so it cannot leave an orphan.
+
+    A board with no game in front of it is eight seconds of zeroes, so the two
+    have to be filtered by the same key - that is the whole reason `requires`
+    lives on the node rather than being derived twice.
+    """
+    without_battle = [module for module in MODULES if module != "sabotage"]
+    flow = build_flow(without_battle)
+
+    assert len(flow) == 11
+    assert not any(node.get("game") == "sabotage" for node in flow)
+    for node in flow:
+        # `total` is the activity board: it ranks the whole show rather than one
+        # game, so it is the one board that has no scoring node behind it.
+        if node["type"] == "leaderboard" and node["section"] != "total":
+            section = node["section"]
+            assert any(
+                other.get("score") == section for other in flow
+            ), f"{node['title']} has no game behind it"
+
+
+def test_the_show_keeps_its_order_whatever_is_hidden():
+    """Filtering must never reorder: the rundown reads the same way minus what
+    was left out, or the welcome map would promise a sequence the show does not
+    run."""
+    full = [node["title"] for node in build_flow()]
+    kept = [node["title"] for node in build_flow(["welcome", "data", "total", "wrapup"])]
+    positions = [full.index(title) for title in kept]
+    assert positions == sorted(positions)
+
+
+def test_each_build_hands_out_its_own_nodes():
+    """`ROUND_FLOW` is module-level, so a build has to copy it: two rooms that
+    shared a dict would see each other's edits."""
+    first, second = build_flow(), build_flow()
+    assert first[0] is not second[0]
+    assert first[0] is not ROUND_FLOW[0]
+
+
+def test_answered_nodes_publish_the_window_the_room_answers_in():
+    """`answer_sec` is what the wall's clock counts.
+
+    A node's clock is longer than the window the room can act in: five seconds
+    of verdict follow each question, ten of reveal follow Data Shadow. The big
+    screen published the whole node clock and so read "0:25" while every iPad
+    read "0:20" - the one number in the room nobody could agree on. The split is
+    therefore data, and every node whose clock the devices also show declares it.
+    """
+    # Sabotage is left out on purpose: its node clock is a slot, and both
+    # screens read the battle's own clock from the same payload instead.
+    timed = [
+        node
+        for node in ROUND_FLOW
+        if node.get("seconds_each") or (node["type"] == "game" and node.get("game") == "data_shadow")
+    ]
+    assert len(timed) == 3
+    for node in timed:
+        cycle = node.get("seconds_each") or node["duration_sec"]
+        assert "answer_sec" in node, f"{node['title']} hides its answer window"
+        # The tail has to be a real stretch: it is the verdict, and an empty one
+        # would mean the wall and the iPad were counting the same window twice.
+        assert node["answer_sec"] < cycle, f"{node['title']} has no verdict left"

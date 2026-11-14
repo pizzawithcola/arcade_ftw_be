@@ -404,3 +404,109 @@ async def test_the_player_list_can_be_filtered(client: AsyncClient, admin_header
     response = await client.get("/api/players", params={"room": "crud-filter"}, headers=admin_headers)
     assert response.status_code == 200
     assert [entry["nickname"] for entry in response.json()["players"]] == ["filtered-player"]
+
+
+# ─── modules ──────────────────────────────────────────────────────────────────
+async def test_a_room_can_be_built_without_a_game(
+    client: AsyncClient, admin_headers: dict
+) -> None:
+    """The Singapore cut: three games, and the flow simply does not contain the
+    fourth. Nothing is skipped at runtime, which is why no screen can be left
+    waiting on a node that is not there."""
+    created = await client.post(
+        "/api/rooms",
+        json={"code": "crud-short", "modules": ["welcome", "hallucination", "data", "ultimate", "total", "wrapup"]},
+        headers=admin_headers,
+    )
+    assert created.status_code == 201
+    body = created.json()
+    assert body["modules"] == ["welcome", "hallucination", "data", "ultimate", "total", "wrapup"]
+
+    state = body["state"]
+    assert state["phase"] == "waiting"
+    assert state["node_count"] == 11
+    assert "sabotage" not in state["modules"]
+    assert not any(node.get("game") == "sabotage" for node in state["flow"])
+    # Eight minutes of show minus the battle slot and its board.
+    assert state["total_sec"] == 325
+
+
+async def test_a_room_without_a_module_list_gets_the_whole_show(
+    client: AsyncClient, admin_headers: dict
+) -> None:
+    """Every room created before this existed means "all of it", so the history
+    keeps playing the same thirteen nodes and needs no backfill."""
+    created = await client.post(
+        "/api/rooms", json={"code": "crud-full"}, headers=admin_headers
+    )
+    assert created.status_code == 201
+    assert created.json()["modules"] is None
+    assert created.json()["state"]["node_count"] == 13
+    assert created.json()["state"]["total_sec"] == 528
+
+
+async def test_an_unknown_module_is_refused(client: AsyncClient, admin_headers: dict) -> None:
+    """A typo would otherwise hide a game by accident, and the operator would
+    only find out when the screen did not appear."""
+    response = await client.post(
+        "/api/rooms",
+        json={"code": "crud-typo", "modules": ["hallucination", "battle"]},
+        headers=admin_headers,
+    )
+    assert response.status_code == 422
+    assert "battle" in response.json()["detail"]
+
+
+async def test_a_room_with_no_modules_at_all_is_refused(
+    client: AsyncClient, admin_headers: dict
+) -> None:
+    """An engine with no nodes finishes on its first tick, leaving every screen
+    on the wrap-up of a show that never ran."""
+    response = await client.post(
+        "/api/rooms", json={"code": "crud-empty", "modules": []}, headers=admin_headers
+    )
+    assert response.status_code == 422
+
+
+async def test_the_module_order_follows_the_show_not_the_request(
+    client: AsyncClient, admin_headers: dict
+) -> None:
+    """The rundown reads the same however the caller listed the modules, so a
+    room's flow is never a function of JSON key order."""
+    created = await client.post(
+        "/api/rooms",
+        json={"code": "crud-order", "modules": ["wrapup", "ultimate", "welcome", "data"]},
+        headers=admin_headers,
+    )
+    assert created.status_code == 201
+    assert created.json()["modules"] == ["welcome", "data", "ultimate", "wrapup"]
+
+
+async def test_a_restart_rebuilds_the_same_short_show(
+    client: AsyncClient, admin_headers: dict
+) -> None:
+    """The module set is part of the room, not of the process.
+
+    A room that comes back full after a deploy would add a game to a show that
+    was built without one - mid-event, with players in it.
+    """
+    created = await client.post(
+        "/api/rooms",
+        json={"code": "crud-reload", "modules": ["welcome", "data", "total", "wrapup"]},
+        headers=admin_headers,
+    )
+    assert created.status_code == 201
+    # welcome + (opening, game, board) + activity board + wrap up
+    assert created.json()["state"]["node_count"] == 6
+
+    # Forget the in-memory engine, then boot again the way the app does.
+    rooms.remove("crud-reload")
+    await rooms.load()
+
+    rebuilt = rooms.get("crud-reload")
+    assert rebuilt is not None
+    assert rebuilt.node_count == 6
+    # The one game it kept (its opening and its challenge), and the three it
+    # never had - in particular no battle node came back.
+    games = {node["game"] for node in rebuilt.flow if node.get("game")}
+    assert games == {"data_shadow"}

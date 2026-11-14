@@ -67,6 +67,22 @@ class Room(Base):
     )
     # Set when the room is finished: a closed room is history, not playable.
     closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # Which modules this room runs, comma-separated (`flow.MODULES` keys).
+    # NULL means "everything", which is what every room created before this
+    # column existed means - so the history needs no backfill and keeps playing
+    # the same thirteen nodes it did.
+    #
+    # It lives here rather than in the flow because a show is built once: the
+    # engine's node list is fixed for the life of the room, so an operator who
+    # wants a different set creates a new room rather than editing this one.
+    modules: Mapped[str | None] = mapped_column(String(128))
+
+    @property
+    def module_list(self) -> list[str] | None:
+        """`None` for "all modules", so callers do not each invent a sentinel."""
+        if not self.modules:
+            return None
+        return [part.strip() for part in self.modules.split(",") if part.strip()]
 
     players: Mapped[list[Player]] = relationship(back_populates="room")
     participants: Mapped[list["RoomParticipant"]] = relationship(

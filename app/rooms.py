@@ -17,6 +17,7 @@ from sqlalchemy import select
 
 from app.database import SessionLocal
 from app.engine import Engine
+from app.flow import build_flow
 from app.manager import manager
 from app.models import Room
 from app.sabotage import auto_start_sabotage
@@ -30,8 +31,10 @@ class RoomRegistry:
     def __init__(self) -> None:
         self._engines: dict[str, Engine] = {}
 
-    def _build(self, code: str) -> Engine:
-        engine = Engine()
+    def _build(self, code: str, modules: list[str] | None = None) -> Engine:
+        # `None` is the whole show: a room created before modules existed, or one
+        # that asked for everything, has no stored set.
+        engine = Engine(flow=build_flow(modules))
 
         async def notify() -> None:
             # The main flow reaching the sabotage node starts that game on its
@@ -55,18 +58,25 @@ class RoomRegistry:
         """
         try:
             async with SessionLocal() as session:
-                result = await session.execute(select(Room.code).order_by(Room.code))
-                codes = result.scalars().all()
+                rows = (
+                    await session.execute(
+                        select(Room.code, Room.modules).order_by(Room.code)
+                    )
+                ).all()
         except Exception as exc:  # noqa: BLE001 - any failure means we cannot read rooms
             logger.warning("could not load rooms from the database: %s", exc)
-            codes = [DEFAULT_ROOM]
-        for code in codes:
-            self.ensure(code)
+            rows = [(DEFAULT_ROOM, None)]
+        for code, modules in rows:
+            # The stored set is part of the room, so a restart must rebuild the
+            # same show: a short one coming back full would silently add games
+            # to a room mid-event.
+            parsed = [part.strip() for part in (modules or "").split(",") if part.strip()]
+            self.ensure(code, parsed or None)
 
-    def ensure(self, code: str) -> Engine:
+    def ensure(self, code: str, modules: list[str] | None = None) -> Engine:
         engine = self._engines.get(code)
         if engine is None:
-            engine = self._build(code)
+            engine = self._build(code, modules)
             self._engines[code] = engine
         return engine
 

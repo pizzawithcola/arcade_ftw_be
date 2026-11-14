@@ -108,6 +108,17 @@ class Engine:
             "flow": self.flow,
             "remaining_ms": int(remaining * 1000),
             "question": self._question(remaining),
+            # What this room was built from, and how long that runs. The console
+            # shows both; the frontend uses the modules to count the games in
+            # "Round 2 of 3" and to lay out the welcome map.
+            # Tolerant of a hand-built flow (tests, and any future one written
+            # without tags): an untagged node simply does not name a module,
+            # rather than crashing every snapshot. `flow`'s own test is what
+            # keeps the real rundown fully tagged.
+            "modules": sorted(
+                {node["requires"] for node in self.flow if node.get("requires")}
+            ),
+            "total_sec": sum(float(node.get("duration_sec") or 0) for node in self.flow),
             "server_time_ms": int(time.time() * 1000),
         }
 

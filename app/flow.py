@@ -39,12 +39,37 @@ introduce the game before the game introduces itself.
 
 The order is deliberate: the name lands first, so the room knows what it is about
 to play, then the rules, then the game.
+
+Every node also carries ``requires``: the module it belongs to. A room is built
+from a set of modules (see ``build_flow``), so hiding a game means building a
+shorter list rather than teaching the engine to skip. Nothing is ever "skipped"
+at runtime, which is why a hidden module cannot leave a screen waiting on a node
+that is not there. The key is declared on the node instead of inferred from
+``game`` / ``section`` so that a new node which forgets to name its module fails
+a test instead of turning up in every room.
 """
+
+from __future__ import annotations
+
+from collections.abc import Iterable
 
 # A section board is the only place the room sees the standings move, and a
 # screen that hears about the node a second or two late used to lose most of it.
 # Eight seconds is long enough that a hiccup costs a beat instead of the board.
 BOARD_SECONDS = 8
+
+# What a room is built from. Four games, plus the three pieces of furniture
+# around them, which are separate because a shorter show may not want them
+# either. `total` keeps the section name the flow already uses for that board.
+MODULES: tuple[str, ...] = (
+    "welcome",
+    "hallucination",
+    "data",
+    "sabotage",
+    "ultimate",
+    "total",
+    "wrapup",
+)
 
 # Sabotage's slot, from the engine's own clock (sabotage_config.TIMINGS): 10s
 # draw + 15s rules + 40s first pick + 3 x 30s picks + 4 x 8s reveals + 5s final
@@ -64,7 +89,7 @@ ROUND_FLOW: list[dict] = [
     # The welcome lays out the four games one card at a time. The reveal is done
     # by the fifth second (2.2s of cards plus their entrances), so the rest of the
     # ten is reading time.
-    {"type": "intro", "title": "Welcome", "duration_sec": 10},
+    {"type": "intro", "title": "Welcome", "duration_sec": 10, "requires": "welcome"},
     {
         "type": "opening",
         "game": "hallucination",
@@ -72,6 +97,7 @@ ROUND_FLOW: list[dict] = [
         "duration_sec": 15,
         "title_sec": 3,
         "section": "hallucination",
+        "requires": "hallucination",
     },
     {
         "type": "game",
@@ -83,13 +109,20 @@ ROUND_FLOW: list[dict] = [
         "closing_sec": 0,
         "questions": 3,
         "seconds_each": 30,
+        # The 30 is a whole cycle: 25s of answering, then 5s of verdict. The
+        # wall's clock counts the window the room can act in, so it needs the
+        # split - without it the big screen reads five seconds longer than the
+        # iPad in a player's hand.
+        "answer_sec": 25,
         "score": "hallucination",
+        "requires": "hallucination",
     },
     {
         "type": "leaderboard",
         "section": "hallucination",
         "title": "Hallucination standings",
         "duration_sec": BOARD_SECONDS,
+        "requires": "hallucination",
     },
     {
         "type": "opening",
@@ -98,6 +131,7 @@ ROUND_FLOW: list[dict] = [
         "duration_sec": 15,
         "title_sec": 3,
         "section": "data",
+        "requires": "data",
     },
     {
         "type": "game",
@@ -107,9 +141,19 @@ ROUND_FLOW: list[dict] = [
         # leaked - the answer is withheld until the clock runs out, so the tail
         # is the game.
         "duration_sec": 60,
+        # 50s of reading and tapping, 10s of reveal. The split is here for the
+        # same reason: the wall clock has to match the device.
+        "answer_sec": 50,
         "score": "data",
+        "requires": "data",
     },
-    {"type": "leaderboard", "section": "data", "title": "Data Shadow standings", "duration_sec": BOARD_SECONDS},
+    {
+        "type": "leaderboard",
+        "section": "data",
+        "title": "Data Shadow standings",
+        "duration_sec": BOARD_SECONDS,
+        "requires": "data",
+    },
     # No `opening`: AI Cyber Battle draws its teams and then shows its own rules
     # card inside the node, so a flow-level card would introduce the game twice.
     {
@@ -124,12 +168,14 @@ ROUND_FLOW: list[dict] = [
         # team draw cannot push the last reveal past the cut.
         "duration_sec": SABOTAGE_SLOT_SECONDS,
         "score": "sabotage",
+        "requires": "sabotage",
     },
     {
         "type": "leaderboard",
         "section": "sabotage",
         "title": "AI Cyber Battle standings",
         "duration_sec": BOARD_SECONDS,
+        "requires": "sabotage",
     },
     # No name card is needed separately: the opening carries it. There is also no
     # section leaderboard after the quiz - its scores land on the activity board,
@@ -141,6 +187,7 @@ ROUND_FLOW: list[dict] = [
         "duration_sec": 15,
         "title_sec": 3,
         "section": "ultimate",
+        "requires": "ultimate",
     },
     {
         "type": "quiz",
@@ -157,15 +204,37 @@ ROUND_FLOW: list[dict] = [
         "duration_sec": 84,
         "questions": 3,
         "seconds_each": 25,
+        # 20s per question plus the 5s verdict folded into `seconds_each`.
+        "answer_sec": 20,
         "bonus_intro_sec": 3,
         "bonus_questions": [2, 3],
         "score": "ultimate",
+        "requires": "ultimate",
     },
     {
         "type": "leaderboard",
         "section": "total",
         "title": "Activity Leaderboard",
         "duration_sec": 10,
+        "requires": "total",
     },
-    {"type": "outro", "title": "Wrap up", "duration_sec": 10},
+    {"type": "outro", "title": "Wrap up", "duration_sec": 10, "requires": "wrapup"},
 ]
+
+
+def build_flow(modules: Iterable[str] | None = None) -> list[dict]:
+    """The rundown for a room that runs ``modules``, in the show's own order.
+
+    ``None`` means every module, which is what a room created before this
+    existed gets. Unknown keys are ignored here and rejected at the API, so this
+    function stays total: it can always produce a list for the engine to walk.
+
+    An empty result is possible only if the caller asks for nothing; the room
+    endpoint refuses that, because an engine with no nodes would finish on its
+    first tick and leave every screen on the wrap-up of a show that never ran.
+    """
+    keep = set(MODULES if modules is None else modules)
+    # A fresh dict per node: rooms mutate nothing today, but the engine already
+    # deep-copies `ROUND_FLOW`, and handing out the module-level dicts would put
+    # one room's future edit in every other room's flow.
+    return [dict(node) for node in ROUND_FLOW if node["requires"] in keep]
