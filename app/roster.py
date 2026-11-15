@@ -22,6 +22,7 @@ from app.auth import (
     Claims,
     free_nickname,
     require_admin,
+    require_display,
     require_player,
     require_signed_in,
 )
@@ -179,6 +180,77 @@ async def players(
                 "event": row.event,
                 "team": row.team,
                 "total_score": row.total_score,
+            }
+            for row in rows
+        ],
+    }
+
+
+@router.get(
+    "/{code}/participants",
+    summary="Everyone who ever joined this room, with their scores",
+)
+async def participants(
+    code: str,
+    _: object = Depends(require_display),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """The room's history, for the console.
+
+    Deliberately a second endpoint rather than a change to `/players`: that one
+    answers "who is in this room now" and the waiting room depends on it, while
+    this answers "who played this round". They differ because finishing a room
+    clears `players.room_code` - the current-room pointer - so reading it here
+    would report zero people for every room that has already closed.
+
+    `room_participants` is the record that survives, which is why the count on
+    the room list and the table here can never disagree.
+    """
+    if await session.get(Room, code) is None:
+        raise HTTPException(status_code=404, detail=f"unknown room: {code}")
+
+    rows = (
+        await session.execute(
+            select(
+                Player.id,
+                Player.nickname,
+                Player.event,
+                RoomParticipant.joined_at,
+                Score.hallucination_score,
+                Score.data_score,
+                Score.sabotage_score,
+                Score.ultimate_score,
+                Score.total_score,
+            )
+            .join(Player, Player.id == RoomParticipant.player_id)
+            .outerjoin(Score, Score.player_id == Player.id)
+            .where(RoomParticipant.room_code == code)
+            .order_by(func.coalesce(Score.total_score, 0).desc(), Player.id)
+        )
+    ).all()
+    return {
+        "room": code,
+        "count": len(rows),
+        "players": [
+            {
+                "player_id": row.id,
+                "nickname": row.nickname,
+                "event": row.event,
+                "joined_at": row.joined_at.isoformat() if row.joined_at else None,
+                "total_score": row.total_score or 0,
+                # Null rather than zeros: a player who never scored has no score
+                # row, and the console draws that differently from four zeroes.
+                "score": (
+                    {
+                        "hallucination_score": row.hallucination_score or 0,
+                        "data_score": row.data_score or 0,
+                        "sabotage_score": row.sabotage_score or 0,
+                        "ultimate_score": row.ultimate_score or 0,
+                        "total_score": row.total_score or 0,
+                    }
+                    if row.total_score is not None
+                    else None
+                ),
             }
             for row in rows
         ],

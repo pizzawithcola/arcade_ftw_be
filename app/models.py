@@ -6,6 +6,7 @@ from sqlalchemy import (
     ForeignKey,
     Integer,
     String,
+    Text,
     UniqueConstraint,
     func,
 )
@@ -169,3 +170,23 @@ class Score(Base):
     )
 
     player: Mapped["Player"] = relationship(back_populates="score")
+
+
+class AppSetting(Base):
+    """One knob the console keeps between reloads, stored under a bare key.
+
+    A key/value row rather than a column somewhere: the module set belongs to no
+    room (a room's set is fixed when it is built) and to no player, and a table
+    of its own means adding the next setting needs no migration.
+
+    `value` is text on purpose - it carries a JSON array here, and the endpoint
+    that reads it is the one place that decides what a valid value looks like.
+    """
+
+    __tablename__ = "app_settings"
+
+    key: Mapped[str] = mapped_column(String(48), primary_key=True)
+    value: Mapped[str] = mapped_column(Text, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
