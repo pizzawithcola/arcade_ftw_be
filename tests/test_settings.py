@@ -85,3 +85,74 @@ async def test_the_setting_is_readable_but_not_writable_without_full_scope(
         await client.put("/api/settings", json={"modules": SHORT}, headers=DISPLAY)
     ).status_code == 401
     assert (await client.get("/api/settings")).status_code == 401
+
+
+async def test_the_boards_rank_the_event_the_console_chose(client: AsyncClient):
+    """The wall and the waiting room read this endpoint, and neither of them is
+    a place to pick an event: the choice has to come from the console."""
+    ftw = await client.post(
+        "/api/auth/player", json={"nickname": "Board-Ftw", "event": "hk_fintech_week"}
+    )
+    emp = await client.post(
+        "/api/auth/player", json={"nickname": "Board-Emp", "event": "hk_employee"}
+    )
+    for body, points in ((ftw.json(), 300), (emp.json(), 900)):
+        await client.put(
+            f"/api/players/{body['player_id']}/score",
+            json={"hallucination_score": points},
+            headers=FULL,
+        )
+    try:
+        # Nothing chosen: every event at once, which is how this used to read.
+        together = (await client.get("/api/leaderboard?limit=50")).json()
+        assert together["event"] is None
+        assert {"Board-Ftw", "Board-Emp"} <= {row["nickname"] for row in together["players"]}
+
+        await client.put("/api/settings", json={"active_event": "hk_employee"}, headers=FULL)
+        scoped = (await client.get("/api/leaderboard?limit=50")).json()
+        assert scoped["event"] == "hk_employee"
+        names = {row["nickname"] for row in scoped["players"]}
+        assert "Board-Emp" in names
+        assert "Board-Ftw" not in names, "another event's player is on the board"
+        # Ordered by score inside the event. Other files leave players behind,
+        # so this checks the ordering rather than a specific first place.
+        scores = [row["total_score"] for row in scoped["players"]]
+        assert scores == sorted(scores, reverse=True)
+        mine = next(row for row in scoped["players"] if row["nickname"] == "Board-Emp")
+        assert mine["total_score"] == 900
+
+        # A one-off look at another event does not disturb the stored choice.
+        other = (await client.get("/api/leaderboard?limit=50&event=hk_fintech_week")).json()
+        assert other["event"] == "hk_fintech_week"
+        assert "Board-Ftw" in {row["nickname"] for row in other["players"]}
+        still = (await client.get("/api/settings", headers=DISPLAY)).json()
+        assert still["active_event"] == "hk_employee"
+
+        # `all` restores the mixed board without clearing the setting.
+        mixed = (await client.get("/api/leaderboard?limit=50&event=all")).json()
+        assert mixed["event"] is None
+
+        # Clearing it goes back to every event.
+        await client.put("/api/settings", json={"active_event": None}, headers=FULL)
+        cleared = (await client.get("/api/leaderboard?limit=50")).json()
+        assert cleared["event"] is None
+    finally:
+        for body in (ftw.json(), emp.json()):
+            await client.delete(f"/api/players/{body['player_id']}", headers=FULL)
+
+
+async def test_an_unknown_active_event_is_refused(client: AsyncClient):
+    response = await client.put("/api/settings", json={"active_event": "mars"}, headers=FULL)
+    assert response.status_code == 422
+    assert "mars" in response.json()["detail"]
+
+
+async def test_saving_one_setting_leaves_the_other_alone(client: AsyncClient):
+    """The module picker and the event switch are on two different pages, so
+    neither may wipe the other."""
+    await client.put("/api/settings", json={"modules": SHORT}, headers=FULL)
+    await client.put("/api/settings", json={"active_event": "hk_employee"}, headers=FULL)
+    assert (await client.get("/api/settings", headers=DISPLAY)).json()["modules"] == SHORT
+
+    await client.put("/api/settings", json={"modules": list(MODULES)}, headers=FULL)
+    assert (await client.get("/api/settings", headers=DISPLAY)).json()["active_event"] == "hk_employee"
