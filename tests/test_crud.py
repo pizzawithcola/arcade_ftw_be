@@ -427,8 +427,8 @@ async def test_a_room_can_be_built_without_a_game(
     assert state["node_count"] == 11
     assert "sabotage" not in state["modules"]
     assert not any(node.get("game") == "sabotage" for node in state["flow"])
-    # Eight minutes of show minus the battle slot and its board.
-    assert state["total_sec"] == 325
+    # The whole show minus the battle slot and its board.
+    assert state["total_sec"] == 316
 
 
 async def test_a_room_without_a_module_list_gets_the_whole_show(
@@ -442,7 +442,7 @@ async def test_a_room_without_a_module_list_gets_the_whole_show(
     assert created.status_code == 201
     assert created.json()["modules"] is None
     assert created.json()["state"]["node_count"] == 13
-    assert created.json()["state"]["total_sec"] == 528
+    assert created.json()["state"]["total_sec"] == 519
 
 
 async def test_an_unknown_module_is_refused(client: AsyncClient, admin_headers: dict) -> None:

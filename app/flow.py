@@ -13,10 +13,10 @@ A node has two identifying fields:
 
 Durations for the built screens are content-driven: the node has to outlast its
 questions, or the engine advances mid-question. A question is a fixed cycle:
-20s to answer plus 5s reading the verdict for both Hallucination and the quiz,
-and the verdict page advances itself so nobody has to press anything. Every node
-also keeps a tail after its last question so the closing score is not cut off -
-``duration_sec`` is the cycles plus that tail.
+15s to answer plus 10s reading the verdict for Hallucination, 20s plus 8s for the
+quiz, and the verdict page advances itself so nobody has to press anything. Every
+node also keeps a tail after its last question so the closing score is not cut
+off - ``duration_sec`` is the cycles plus that tail.
 
 ``intro_sec`` is subtracted before ``seconds_each`` is applied, so the question
 index the big screen shows is still derived from the node clock alone. No node
@@ -57,6 +57,13 @@ from collections.abc import Iterable
 # screen that hears about the node a second or two late used to lose most of it.
 # Eight seconds is long enough that a hiccup costs a beat instead of the board.
 BOARD_SECONDS = 8
+
+# Hallucination's board is shorter because the room has already been looking at
+# one: the wall shows the standings through the 10s review of every question, so
+# the node only has to carry the iPad's own reveal plus a hand-over beat. The
+# wall therefore reads fifteen seconds of standings in a row, the device ten of
+# review and five of standings - which is what the round was written to be.
+HALLUCINATION_BOARD_SECONDS = 5
 
 # What a room is built from. Four games, plus the three pieces of furniture
 # around them, which are separate because a shorter show may not want them
@@ -103,17 +110,18 @@ ROUND_FLOW: list[dict] = [
         "type": "game",
         "game": "hallucination",
         "title": "Hallucination",
-        # 3 x (25s answer + 5s verdict). No closing page: the last verdict hands
+        # 3 x (15s answer + 10s review). No closing page: the last review hands
         # straight over to the leaderboard, so `closing_sec` is zero here.
-        "duration_sec": 90,
+        "duration_sec": 75,
         "closing_sec": 0,
         "questions": 3,
-        "seconds_each": 30,
-        # The 30 is a whole cycle: 25s of answering, then 5s of verdict. The
+        "seconds_each": 25,
+        # The 25 is a whole cycle: 15s of answering, then 10s of review. The
         # wall's clock counts the window the room can act in, so it needs the
-        # split - without it the big screen reads five seconds longer than the
-        # iPad in a player's hand.
-        "answer_sec": 25,
+        # split - without it the big screen reads ten seconds longer than the
+        # iPad in a player's hand. The review half is also where the wall switches
+        # to the standings while the devices read the answer.
+        "answer_sec": 15,
         "score": "hallucination",
         "requires": "hallucination",
     },
@@ -121,7 +129,7 @@ ROUND_FLOW: list[dict] = [
         "type": "leaderboard",
         "section": "hallucination",
         "title": "Hallucination standings",
-        "duration_sec": BOARD_SECONDS,
+        "duration_sec": HALLUCINATION_BOARD_SECONDS,
         "requires": "hallucination",
     },
     {
@@ -192,7 +200,7 @@ ROUND_FLOW: list[dict] = [
     {
         "type": "quiz",
         "title": "Ultimate Quiz",
-        # 3 x (20s answer + 5s verdict) + 2 x 3s bonus card + 3s of closing
+        # 3 x (20s answer + 8s review) + 2 x 3s bonus card + 3s of closing
         # score. No `intro_sec`: the first question is on screen from the first
         # second. The three are drawn on the device from a seed, so the count is
         # fixed and only the questions vary - the node length never depends on
@@ -201,10 +209,10 @@ ROUND_FLOW: list[dict] = [
         # `bonus_questions` is 1-based and has to name the slots the drawing
         # table multiplies (slots 2 and 3); the iPad warns in development if the
         # two ever disagree.
-        "duration_sec": 84,
+        "duration_sec": 93,
         "questions": 3,
-        "seconds_each": 25,
-        # 20s per question plus the 5s verdict folded into `seconds_each`.
+        "seconds_each": 28,
+        # 20s per question plus the 8s review folded into `seconds_each`.
         "answer_sec": 20,
         "bonus_intro_sec": 3,
         "bonus_questions": [2, 3],
