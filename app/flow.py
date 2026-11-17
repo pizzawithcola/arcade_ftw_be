@@ -109,7 +109,7 @@ ROUND_FLOW: list[dict] = [
     {
         "type": "game",
         "game": "hallucination",
-        "title": "Hallucination",
+        "title": "Can you trust it",
         # 3 x (15s answer + 10s review). No closing page: the last review hands
         # straight over to the leaderboard, so `closing_sec` is zero here.
         "duration_sec": 75,
@@ -128,14 +128,14 @@ ROUND_FLOW: list[dict] = [
     {
         "type": "leaderboard",
         "section": "hallucination",
-        "title": "Hallucination standings",
+        "title": "Hallucination Standings",
         "duration_sec": HALLUCINATION_BOARD_SECONDS,
         "requires": "hallucination",
     },
     {
         "type": "opening",
         "game": "data_shadow",
-        "title": "Data Shadow",
+        "title": "Data Shadows",
         "duration_sec": 15,
         "title_sec": 3,
         "section": "data",
@@ -144,7 +144,7 @@ ROUND_FLOW: list[dict] = [
     {
         "type": "game",
         "game": "data_shadow",
-        "title": "Data Shadow",
+        "title": "Data Shadows",
         # 50s of reading and tapping paragraphs, plus 10s that reveal what
         # leaked - the answer is withheld until the clock runs out, so the tail
         # is the game.
@@ -158,7 +158,7 @@ ROUND_FLOW: list[dict] = [
     {
         "type": "leaderboard",
         "section": "data",
-        "title": "Data Shadow standings",
+        "title": "Data Shadows Standings",
         "duration_sec": BOARD_SECONDS,
         "requires": "data",
     },
@@ -181,7 +181,7 @@ ROUND_FLOW: list[dict] = [
     {
         "type": "leaderboard",
         "section": "sabotage",
-        "title": "AI Cyber Battle standings",
+        "title": "AI Cyber Battle Standings",
         "duration_sec": BOARD_SECONDS,
         "requires": "sabotage",
     },

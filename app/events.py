@@ -12,7 +12,7 @@ picks it up on the next page load.
 from __future__ import annotations
 
 EVENTS: list[dict[str, str]] = [
-    {"key": "hk_fintech_week", "label": "HK Fintech Week"},
+    {"key": "hk_fintech_week", "label": "HK Fintech Festival"},
     {"key": "hk_employee", "label": "HK Employee Week"},
     {"key": "sg_fintech_week", "label": "Singapore Fintech Festival"},
 ]
