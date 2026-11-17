@@ -239,3 +239,77 @@ async def test_a_finished_room_is_closed_not_restartable(
             .where(RoomParticipant.room_code == "finish-restart")
         )
         assert count == 1
+
+
+async def test_a_waiting_room_can_be_retimed(client: AsyncClient, admin_headers: dict) -> None:
+    """Ticking a game off has to shorten the room in front of the operator.
+
+    The console's picker used to be a note about the *next* room, which reads as
+    broken when the current one is still an eight minute show.
+    """
+    code = "retime-1"
+    await client.post("/api/rooms", json={"code": code}, headers=admin_headers)
+    try:
+        body = (
+            await client.post(
+                f"/api/rooms/{code}/modules",
+                json={"modules": ["welcome", "data", "total", "wrapup"]},
+                headers=admin_headers,
+            )
+        ).json()
+        assert body["modules"] == ["welcome", "data", "total", "wrapup"]
+        assert body["state"]["node_count"] == 6
+        assert body["state"]["phase"] == "waiting"
+        # The room list agrees, so the console's header shows the new length.
+        listed = (await client.get("/api/rooms", headers=admin_headers)).json()
+        live = next(room for room in listed["rooms"] if room["code"] == code)
+        assert live["state"]["node_count"] == 6
+    finally:
+        await client.delete(f"/api/rooms/{code}", headers=admin_headers)
+
+
+async def test_a_started_room_refuses_a_new_set(client: AsyncClient, admin_headers: dict) -> None:
+    """The node index is part of every score key, so a played show keeps its flow."""
+    code = "retime-2"
+    await client.post("/api/rooms", json={"code": code}, headers=admin_headers)
+    try:
+        await client.post(f"/api/rooms/{code}/start", headers=admin_headers)
+        response = await client.post(
+            f"/api/rooms/{code}/modules",
+            json={"modules": ["welcome", "data", "total", "wrapup"]},
+            headers=admin_headers,
+        )
+        assert response.status_code == 409
+        assert "started" in response.json()["detail"]
+    finally:
+        await client.post(f"/api/rooms/{code}/finish", headers=admin_headers)
+        await client.delete(f"/api/rooms/{code}", headers=admin_headers)
+
+
+async def test_a_finished_show_does_not_hand_out_an_older_room(
+    client: AsyncClient, admin_headers: dict
+) -> None:
+    """`current` is the newest room or nothing.
+
+    Scanning back for anything open meant finishing a round adopted a rehearsal
+    from a week earlier, which looks on the wall like a round starting itself.
+    """
+    old = "current-old"
+    new = "current-new"
+    await client.post("/api/rooms", json={"code": old}, headers=admin_headers)
+    await client.post("/api/rooms", json={"code": new}, headers=admin_headers)
+    try:
+        listed = (await client.get("/api/rooms", headers=admin_headers)).json()
+        assert listed["current"] == new
+        assert (await client.get("/api/rooms/current")).json()["code"] == new
+
+        await client.post(f"/api/rooms/{new}/finish", headers=admin_headers)
+
+        listed = (await client.get("/api/rooms", headers=admin_headers)).json()
+        assert listed["current"] is None, "a closed newest room leaves nothing to join"
+        # And the player-facing endpoint says so instead of pointing at `old`.
+        assert (await client.get("/api/rooms/current")).status_code == 404
+    finally:
+        for code in (old, new):
+            await client.post(f"/api/rooms/{code}/finish", headers=admin_headers)
+            await client.delete(f"/api/rooms/{code}", headers=admin_headers)

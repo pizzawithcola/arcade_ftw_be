@@ -48,8 +48,8 @@ async def list_rooms(
     """Feeds the admin panel and the big screen.
 
     A room is one round: the operator creates a new one per round and the screens
-    follow the newest still-open room. `current` is that room; everything else
-    is history.
+    follow the newest room while it is open. `current` is that room; once it is
+    closed there is none, and everything else is history.
 
     `players` counts everyone who joined the room (from the participant record,
     which survives the room closing); `clients` counts live websocket
@@ -79,8 +79,12 @@ async def list_rooms(
         for row in rows
         if row.code in live
     ]
-    # `current` is the newest still-open room; closed rooms are history.
-    current = next((room["code"] for room in ordered if room["closed_at"] is None), None)
+    # One stage, one room: the newest room *is* the show. Once it is closed there
+    # is nothing to join, and the screens say so - scanning further back for
+    # something open adopted a rehearsal from a week ago, which reads on the wall
+    # as a new round starting by itself.
+    newest = ordered[0] if ordered else None
+    current = newest["code"] if newest is not None and newest["closed_at"] is None else None
     return {"current": current, "rooms": ordered}
 
 
@@ -180,17 +184,17 @@ async def current_room(session: AsyncSession = Depends(get_session)) -> dict:
     any other right to ask. Only the code and the phase are exposed.
 
     Players do not scan: their iPad lands on the login page between rounds and
-    whatever round is newest is the one they join.
+    whatever round is newest is the one they join. A finished newest room answers
+    404 rather than pointing at an older one.
     """
+    # The newest room decides, closed or not: the same rule as `current` in the
+    # room list, so a finished show cannot hand the iPads an older room.
     room = (
         await session.execute(
-            select(Room)
-            .where(Room.closed_at.is_(None))
-            .order_by(Room.created_at.desc(), Room.code.desc())
-            .limit(1)
+            select(Room).order_by(Room.created_at.desc(), Room.code.desc()).limit(1)
         )
     ).scalar_one_or_none()
-    if room is None:
+    if room is None or room.closed_at is not None:
         raise HTTPException(status_code=404, detail="no room yet")
     engine = rooms.get(room.code)
     return {
@@ -319,6 +323,51 @@ async def finish(code: str, session: AsyncSession = Depends(get_session)) -> dic
         room.closed_at = func.now()
     await session.commit()
     return engine.snapshot()
+
+
+class RoomModules(BaseModel):
+    modules: list[str]
+
+
+@router.post(
+    "/{code}/modules",
+    summary="Retime a room that has not started",
+    dependencies=[Depends(require_admin)],
+)
+async def set_room_modules(
+    code: str,
+    body: RoomModules,
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Change the show a waiting room will run.
+
+    A room's set is fixed once it plays - the node index is part of every score
+    report key, so rebuilding a show mid-round would move points between games.
+    Before the first node, though, the flow is still a plan: the operator ticks
+    AI Cyber Battle off in the console and expects the room in front of them to
+    be five minutes shorter, not the one after it.
+    """
+    engine = _engine(code)
+    if engine.snapshot()["phase"] != "waiting":
+        raise HTTPException(
+            status_code=409,
+            detail="the show has started; build a new room to change its games",
+        )
+    chosen = _clean_modules(body.modules)
+    if chosen is None:
+        raise HTTPException(status_code=422, detail="modules cannot be null")
+    room = await session.get(Room, code)
+    if room is None:
+        raise HTTPException(status_code=404, detail=f"unknown room: {code}")
+    room.modules = ",".join(chosen)
+    await session.commit()
+    # A rebuilt flow means a rebuilt engine: the old one's node index no longer
+    # means the same thing.
+    sabotages.remove(code)
+    rooms.remove(code)
+    rebuilt = rooms.ensure(code, chosen)
+    await manager.broadcast_to(code, {"type": "state", "payload": rebuilt.snapshot()})
+    return _room_body(room, rebuilt)
 
 
 @router.post(
