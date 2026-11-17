@@ -185,3 +185,11 @@ async def test_the_theme_does_not_disturb_the_other_settings(client: AsyncClient
     body = (await client.get("/api/settings", headers=DISPLAY)).json()
     assert body["modules"] == SHORT
     assert body["theme"] == "light"
+
+
+async def test_any_screen_can_read_the_theme_without_a_token(client: AsyncClient):
+    """The login page has no session and the public board has no room socket, so
+    the theme has to be readable without either. It is a colour, not a secret."""
+    assert (await client.get("/api/theme")).json()["theme"] == "dark"
+    await client.put("/api/settings", json={"theme": "light"}, headers=FULL)
+    assert (await client.get("/api/theme")).json()["theme"] == "light"

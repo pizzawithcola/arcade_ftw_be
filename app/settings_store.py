@@ -31,6 +31,10 @@ from app.models import AppSetting
 
 router = APIRouter(prefix="/settings", tags=["settings"])
 
+# The theme, on a router of its own because every screen needs it before it has
+# a token: the login page has no session, and the public board has no room.
+theme_router = APIRouter(tags=["settings"])
+
 MODULES_KEY = "next_modules"
 EVENT_KEY = "active_event"
 THEME_KEY = "theme"
@@ -130,6 +134,13 @@ class SettingsBody(BaseModel):
     active_event: str | None = None
     # "dark" or "light".
     theme: str | None = None
+
+
+@theme_router.get("/theme", summary="Which theme every screen wears")
+async def get_theme(session: AsyncSession = Depends(get_session)) -> dict:
+    """Public on purpose: it is a colour, not a secret, and a screen that cannot
+    read it comes up in the wrong one."""
+    return {"theme": await read_theme(session)}
 
 
 @router.get("", summary="The console settings")
