@@ -156,3 +156,32 @@ async def test_saving_one_setting_leaves_the_other_alone(client: AsyncClient):
 
     await client.put("/api/settings", json={"modules": list(MODULES)}, headers=FULL)
     assert (await client.get("/api/settings", headers=DISPLAY)).json()["active_event"] == "hk_employee"
+
+
+async def test_the_room_wears_dark_until_the_console_says_otherwise(client: AsyncClient):
+    """Dark is the show's own look, so a fresh install reads it without a row."""
+    assert (await client.get("/api/settings", headers=DISPLAY)).json()["theme"] == "dark"
+
+    saved = (await client.put("/api/settings", json={"theme": "light"}, headers=FULL)).json()
+    assert saved["theme"] == "light"
+    assert (await client.get("/api/settings", headers=DISPLAY)).json()["theme"] == "light"
+    # And it survives a restart: the value is a row, not a process variable.
+    async with SessionLocal() as session:
+        stored = await session.scalar(text("select value from app_settings where key = 'theme'"))
+    assert stored == "light"
+
+
+async def test_an_unknown_theme_is_refused_and_nothing_is_stored(client: AsyncClient):
+    """A typo would leave every screen unstyled: no variables, no colours."""
+    response = await client.put("/api/settings", json={"theme": "sepia"}, headers=FULL)
+    assert response.status_code == 422
+    assert "sepia" in response.json()["detail"]
+    assert (await client.get("/api/settings", headers=DISPLAY)).json()["theme"] == "dark"
+
+
+async def test_the_theme_does_not_disturb_the_other_settings(client: AsyncClient):
+    await client.put("/api/settings", json={"modules": SHORT}, headers=FULL)
+    await client.put("/api/settings", json={"theme": "light"}, headers=FULL)
+    body = (await client.get("/api/settings", headers=DISPLAY)).json()
+    assert body["modules"] == SHORT
+    assert body["theme"] == "light"

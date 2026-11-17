@@ -38,6 +38,21 @@ class ConnectionManager:
             self._rooms.get(room, set()).discard(websocket)
         logger.info("client left; %d online", self.count())
 
+    async def broadcast_all(self, message: dict) -> None:
+        """Send to every connection, whatever room it is watching.
+
+        Only for things that are not a property of one show - the theme - so a
+        second room rehearsing beside the live one still flips with it.
+        """
+        dead: list[WebSocket] = []
+        for websocket in list(self._where):
+            try:
+                await websocket.send_json(message)
+            except Exception:  # noqa: BLE001 - a closed socket is expected, not a bug
+                dead.append(websocket)
+        for websocket in dead:
+            self.disconnect(websocket)
+
     async def broadcast_to(self, room: str, message: dict) -> None:
         """Send to one room, dropping any connection that has gone away."""
         sockets = list(self._rooms.get(room, ()))

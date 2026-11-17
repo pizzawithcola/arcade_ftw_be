@@ -1,6 +1,7 @@
 """Console settings that outlive the browser.
 
-One row per knob. The only knob today is the module set for the next room.
+One row per knob: the module set for the next room, which event the shared boards
+rank, and which theme every screen wears.
 
 It lives here rather than in `localStorage` because the picker is an operational
 decision, not a personal preference: the operator who sets the Singapore cut on
@@ -25,12 +26,19 @@ from app.auth import require_admin, require_display
 from app.database import get_session
 from app.events import EVENT_KEYS
 from app.flow import MODULES
+from app.manager import manager
 from app.models import AppSetting
 
 router = APIRouter(prefix="/settings", tags=["settings"])
 
 MODULES_KEY = "next_modules"
 EVENT_KEY = "active_event"
+THEME_KEY = "theme"
+
+# Dark is the show's own look and the default; light is the alternate the
+# operator can switch the room to. The names are the CSS attribute values.
+THEMES: tuple[str, ...] = ("dark", "light")
+DEFAULT_THEME = "dark"
 
 
 def clean_modules(modules: list[str]) -> list[str]:
@@ -87,6 +95,21 @@ async def read_active_event(session: AsyncSession) -> str | None:
     return key if key in EVENT_KEYS else None
 
 
+async def read_theme(session: AsyncSession) -> str:
+    """Which theme every screen should wear.
+
+    Stored on the server for the same reason as the other knobs: the wall, the
+    iPads and the console have to agree, and a switched-off tablet that boots
+    later must not come up in last week's theme.
+    """
+    raw = await session.scalar(select(AppSetting.value).where(AppSetting.key == THEME_KEY))
+    if raw is None:
+        return DEFAULT_THEME
+    key = raw.strip().strip('"')
+    # An unknown value would leave the screens unstyled, so it reads as dark.
+    return key if key in THEMES else DEFAULT_THEME
+
+
 async def _store(session: AsyncSession, key: str, value: str) -> None:
     await session.execute(
         pg_insert(AppSetting)
@@ -105,6 +128,8 @@ class SettingsBody(BaseModel):
     modules: list[str] | None = None
     # `None` means "every event"; a key must be one the login screen offers.
     active_event: str | None = None
+    # "dark" or "light".
+    theme: str | None = None
 
 
 @router.get("", summary="The console settings")
@@ -115,6 +140,7 @@ async def get_settings(
     return {
         "modules": await read_modules(session),
         "active_event": await read_active_event(session),
+        "theme": await read_theme(session),
     }
 
 
@@ -143,8 +169,20 @@ async def put_settings(
             if key not in EVENT_KEYS:
                 raise HTTPException(status_code=422, detail=f"unknown event: {key}")
             await _store(session, EVENT_KEY, key)
+    if "theme" in given:
+        theme = (body.theme or "").strip().lower()
+        if theme not in THEMES:
+            raise HTTPException(status_code=422, detail=f"unknown theme: {body.theme}")
+        await _store(session, THEME_KEY, theme)
     await session.commit()
-    return {
+    stored = {
         "modules": await read_modules(session),
         "active_event": await read_active_event(session),
+        "theme": await read_theme(session),
     }
+    if "theme" in given:
+        # Every screen flips at once, not only the one that asked. Not
+        # broadcast_to: a theme is not a property of one show, and a second room
+        # rehearsing beside the live one has to follow it too.
+        await manager.broadcast_all({"type": "theme", "payload": {"theme": stored["theme"]}})
+    return stored

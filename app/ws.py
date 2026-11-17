@@ -12,8 +12,10 @@ from __future__ import annotations
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
+from app.database import SessionLocal
 from app.manager import manager
 from app.rooms import DEFAULT_ROOM, rooms
+from app.settings_store import read_theme
 from app.sabotage import sabotages
 
 router = APIRouter(tags=["ws"])
@@ -32,6 +34,11 @@ async def ws_endpoint(websocket: WebSocket) -> None:
 
     await manager.connect(websocket, code)
     try:
+        # The theme first: a screen that comes up in a light room should not paint
+        # one dark frame while it waits for the state.
+        async with SessionLocal() as session:
+            theme = await read_theme(session)
+        await websocket.send_json({"type": "theme", "payload": {"theme": theme}})
         await websocket.send_json({"type": "state", "payload": engine.snapshot()})
         # A room mid-Sabotage should land a reconnecting screen straight into
         # the game, not wait for the next phase change to hear about it.
