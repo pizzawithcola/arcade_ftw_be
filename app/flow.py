@@ -84,7 +84,7 @@ MODULES: tuple[str, ...] = (
 SABOTAGE_SLOT_SECONDS = 195
 
 # Intro - [opening] Hallucination - [opening] Data Shadow - Sabotage
-# - [opening] Ultimate Quiz - Total - Wrap up
+# - [opening] Ultimate Showdown - Total - Wrap up
 #
 # Three of those are ``opening`` nodes: three seconds of name, twelve of rules.
 #
@@ -199,7 +199,7 @@ ROUND_FLOW: list[dict] = [
     },
     {
         "type": "quiz",
-        "title": "Ultimate Quiz",
+        "title": "Ultimate Showdown",
         # 3 x (20s answer + 8s review) + 2 x 3s bonus card + 3s of closing
         # score. No `intro_sec`: the first question is on screen from the first
         # second. The three are drawn on the device from a seed, so the count is
