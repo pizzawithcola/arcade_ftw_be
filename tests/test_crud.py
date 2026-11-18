@@ -428,7 +428,7 @@ async def test_a_room_can_be_built_without_a_game(
     assert "sabotage" not in state["modules"]
     assert not any(node.get("game") == "sabotage" for node in state["flow"])
     # The whole show minus the battle slot and its board.
-    assert state["total_sec"] == 316
+    assert state["total_sec"] == 331
 
 
 async def test_a_room_without_a_module_list_gets_the_whole_show(
@@ -442,7 +442,7 @@ async def test_a_room_without_a_module_list_gets_the_whole_show(
     assert created.status_code == 201
     assert created.json()["modules"] is None
     assert created.json()["state"]["node_count"] == 13
-    assert created.json()["state"]["total_sec"] == 519
+    assert created.json()["state"]["total_sec"] == 534
 
 
 async def test_an_unknown_module_is_refused(client: AsyncClient, admin_headers: dict) -> None:
@@ -510,3 +510,32 @@ async def test_a_restart_rebuilds_the_same_short_show(
     # never had - in particular no battle node came back.
     games = {node["game"] for node in rebuilt.flow if node.get("game")}
     assert games == {"data_shadow"}
+
+
+async def test_a_new_room_closes_the_one_before_it(
+    client: AsyncClient, admin_headers: dict
+) -> None:
+    """One show at a time: two open rooms is two answers to "which room?".
+
+    The console listed both, `current` was decided by a timestamp, and a room
+    left open overnight could outlive the show it belonged to. Opening the next
+    room ends the previous one, the way finishing it would.
+    """
+    first = await client.post("/api/rooms", json={"code": "crud-one"}, headers=admin_headers)
+    assert first.status_code == 201
+    headers = await _player_headers(client, "left-behind")
+    await client.post("/api/rooms/crud-one/join", headers=headers)
+
+    second = await client.post("/api/rooms", json={"code": "crud-two"}, headers=admin_headers)
+    assert second.status_code == 201
+
+    listed = await client.get("/api/rooms", headers=admin_headers)
+    open_codes = [room["code"] for room in listed.json()["rooms"] if room["closed_at"] is None]
+    assert open_codes == ["crud-two"], f"more than one room is open: {open_codes}"
+    assert listed.json()["current"] == "crud-two"
+
+    # And the player who was in the old room is released from it, or their
+    # device keeps answering into a show that has ended.
+    me = await client.get("/api/auth/me", headers=headers)
+    player = await client.get(f"/api/players/{me.json()['player_id']}", headers=admin_headers)
+    assert player.json()["room_code"] is None

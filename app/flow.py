@@ -110,18 +110,18 @@ ROUND_FLOW: list[dict] = [
         "type": "game",
         "game": "hallucination",
         "title": "Can you trust it",
-        # 3 x (15s answer + 10s review). No closing page: the last review hands
+        # 3 x (20s answer + 10s review). No closing page: the last review hands
         # straight over to the leaderboard, so `closing_sec` is zero here.
-        "duration_sec": 75,
+        "duration_sec": 90,
         "closing_sec": 0,
         "questions": 3,
-        "seconds_each": 25,
-        # The 25 is a whole cycle: 15s of answering, then 10s of review. The
+        "seconds_each": 30,
+        # The 30 is a whole cycle: 20s of answering, then 10s of review. The
         # wall's clock counts the window the room can act in, so it needs the
         # split - without it the big screen reads ten seconds longer than the
         # iPad in a player's hand. The review half is also where the wall switches
         # to the standings while the devices read the answer.
-        "answer_sec": 15,
+        "answer_sec": 20,
         "score": "hallucination",
         "requires": "hallucination",
     },

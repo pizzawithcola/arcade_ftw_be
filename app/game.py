@@ -125,6 +125,27 @@ async def create_room(
         raise HTTPException(status_code=409, detail=f"room already exists: {code}")
     modules = _clean_modules(body.modules)
 
+    # One show at a time. Creating a room ends every room still open: two open
+    # rooms meant the console listed both, the newest decided `current` by a
+    # timestamp, and a rehearsal room left open overnight could outlive the show
+    # it belonged to. Closing is the same act `finish` performs, minus the
+    # engine - these rooms keep their scores and their participant rows.
+    leftover = (
+        await session.execute(select(Room).where(Room.closed_at.is_(None)))
+    ).scalars().all()
+    for old_room in leftover:
+        old_room.closed_at = func.now()
+        engine = rooms.get(old_room.code)
+        if engine is not None:
+            await engine.finish()
+        # A player bound to a closed room is released, exactly as `finish` does,
+        # or their device keeps answering into a show that is over.
+        await session.execute(
+            update(Player)
+            .where(Player.room_code == old_room.code)
+            .values(room_code=None, team=None)
+        )
+
     room = Room(code=code, modules=",".join(modules) if modules else None)
     session.add(room)
     await session.commit()
