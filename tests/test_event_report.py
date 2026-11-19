@@ -60,11 +60,21 @@ async def event_players(client: AsyncClient, display_headers: dict):
     also_before = await _summary(client, display_headers, "hk_fintech_week")
     scored = await _player(client, "Rep-Scored-Emp", "hk_employee")
     idle = await _player(client, "Rep-Idle-Emp", "hk_employee")
+    # Answered and earned nothing: a zero row is the proof of having played.
+    pointless = await _player(client, "Rep-Zero-Emp", "hk_employee")
     other = await _player(client, "Rep-Scored-Ftw", "hk_fintech_week")
     await _score(client, scored, hallucination_score=100, data_score=200)
+    await _score(client, pointless, hallucination_score=0, data_score=0)
     await _score(client, other, hallucination_score=500, data_score=500)
-    yield {"scored": scored, "idle": idle, "other": other, "before": before, "also_before": also_before}
-    for player_id in (scored, idle, other):
+    yield {
+        "scored": scored,
+        "idle": idle,
+        "pointless": pointless,
+        "other": other,
+        "before": before,
+        "also_before": also_before,
+    }
+    for player_id in (scored, idle, pointless, other):
         await client.delete(f"/api/players/{player_id}", headers=ADMIN)
 
 
@@ -75,7 +85,7 @@ async def test_an_event_reports_only_its_own_players(
     before = event_players["before"]
     assert body["event"]["key"] == "hk_employee"
     # Both of this event's players, and neither of the other event's.
-    assert body["players"] == before["players"] + 2
+    assert body["players"] == before["players"] + 3
     assert body["scored"] == before["scored"] + 1
     # The other event did grow, so the scope is doing something rather than
     # reporting a database that never changed.
@@ -104,9 +114,30 @@ async def test_registrations_are_bucketed_by_host_time(
     before = event_players["before"]
     today = body["registrations_per_day"][-1]
     earlier = {day["date"]: day["count"] for day in before["registrations_per_day"]}
-    assert today["count"] == earlier.get(today["date"], 0) + 2
+    earlier_played = {day["date"]: day["played"] for day in before["registrations_per_day"]}
+    assert today["count"] == earlier.get(today["date"], 0) + 3
+    # Of the three new sign-ups, two played: the one who scored and the one who
+    # answered and earned nothing. Having a score row is what "played" means,
+    # not having points on it.
+    assert today["played"] == earlier_played.get(today["date"], 0) + 2
     # Bucketed on the host's calendar, so the newest bucket is a plain date.
     assert len(today["date"]) == 10 and today["date"][4] == "-"
+
+
+async def test_played_counts_an_answer_that_earned_nothing(
+    client: AsyncClient, display_headers: dict, event_players: dict
+):
+    """A player who answered and scored zero played. A player who never
+    answered did not. They are different facts and the report keeps both."""
+    body = await _summary(client, display_headers, "hk_employee")
+    before = event_players["before"]
+    # Three sign-ups: one scored, one answered for nothing, one never answered.
+    assert body["players"] == before["players"] + 3
+    # Two of them played; only one of those scored.
+    assert body["played"] == before["played"] + 2
+    assert body["scored"] == before["scored"] + 1
+    # And the rate is played over registered, not scored over registered.
+    assert body["played"] > body["scored"]
 
 
 async def test_rounds_are_attributed_to_the_event_the_room_was_played_in(

@@ -66,6 +66,10 @@ def _rows(rows) -> list[dict]:
         {
             "nickname": player.nickname,
             "created_at": player.created_at,
+            # Having a score row at all is the record that this player answered
+            # something. A player who answered and scored nothing still played,
+            # which is why this is not `total > 0`.
+            "played": score is not None,
             "total": score.total_score if score is not None else 0,
             "games": {
                 key: (getattr(score, column) or 0) if score is not None else 0
@@ -141,11 +145,20 @@ async def _unattributed_rooms(session: AsyncSession) -> int:
 
 
 def _registration_days(rows: list[dict]) -> list[dict]:
-    days: dict[str, int] = {}
+    """Sign-ups per day, and how many of that day's sign-ups went on to play.
+
+    Both numbers in one bucket because they are read together: a tall bar with
+    a short played count is a day people arrived and were never taken into a
+    room, which is a different problem from a quiet day.
+    """
+    days: dict[str, dict[str, int]] = {}
     for row in rows:
         day = row["created_at"].astimezone(REPORT_TZ).strftime("%Y-%m-%d")
-        days[day] = days.get(day, 0) + 1
-    return [{"date": day, "count": count} for day, count in sorted(days.items())]
+        bucket = days.setdefault(day, {"count": 0, "played": 0})
+        bucket["count"] += 1
+        if row["played"]:
+            bucket["played"] += 1
+    return [{"date": day, **counts} for day, counts in sorted(days.items())]
 
 
 def _median(values: list[int]) -> float:
@@ -168,10 +181,19 @@ def _summary(key: str, rows: list[dict], rounds: dict[str, dict[str, int]], unat
             "average": _round(sum(points) / len(points)) if points else 0.0,
             "best": max(points) if points else 0,
         }
+    played = len([row for row in rows if row["played"]])
     per_event = rounds.get(key, {"rounds": 0, "participations": 0})
     return {
         "event": {"key": key, "label": _label(key)},
         "players": len(rows),
+        # Everyone who was in a room and answered something, including the ones
+        # whose answers earned nothing. This is the number the room asks for:
+        # "did they play?", not "did they score?".
+        "played": played,
+        "played_rate": round(played / len(rows), 3) if rows else 0.0,
+        # Kept alongside: a player who scored nothing at all is a different
+        # signal from one who never answered, and the gap between the two is
+        # what says whether a round actually ran.
         "scored": len(totals),
         # A player who signed in and never answered is a different signal from a
         # player who did not turn up, so the rate is published, not just the count.
