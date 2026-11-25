@@ -293,7 +293,21 @@ def _game_stats(rows: list[dict], game: str) -> dict:
 # have scored. Absolute bands would compare a three-game night to a four-game
 # one and call the difference a result. 0 is its own band because "answered and
 # scored nothing" is the finding, not the bottom of a range.
-SCORE_BANDS: list[tuple[int, int]] = [(0, 0), (1, 20), (21, 40), (41, 60), (61, 80), (81, 100)]
+# Ten-point steps: the chart beside this list has one column per band, and ten
+# columns read as a distribution where five read as a bar chart.
+SCORE_BANDS: list[tuple[int, int]] = [
+    (0, 0),
+    (1, 10),
+    (11, 20),
+    (21, 30),
+    (31, 40),
+    (41, 50),
+    (51, 60),
+    (61, 70),
+    (71, 80),
+    (81, 90),
+    (91, 100),
+]
 
 
 def _band_label(low: int, high: int) -> str:

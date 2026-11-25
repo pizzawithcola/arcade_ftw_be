@@ -283,7 +283,19 @@ async def test_the_all_time_distribution_counts_who_played(
     alike. Only players who played are counted, and 0 is its own band."""
     whole = await _summary(client, display_headers, "all")
     bands = {band["label"]: band["count"] for band in whole["distribution"]}
-    assert list(bands) == ["0", "1–20%", "21–40%", "41–60%", "61–80%", "81–100%"]
+    assert list(bands) == [
+        "0",
+        "1–10%",
+        "11–20%",
+        "21–30%",
+        "31–40%",
+        "41–50%",
+        "51–60%",
+        "61–70%",
+        "71–80%",
+        "81–90%",
+        "91–100%",
+    ]
     assert sum(bands.values()) == whole["played"], 'every player who played lands in one band'
 
 
@@ -302,8 +314,8 @@ async def test_the_distribution_is_a_share_of_what_each_event_could_score(
 
         whole = await _summary(client, display_headers, "all")
         bands = {band["label"]: band["count"] for band in whole["distribution"]}
-        assert bands["81–100%"] >= 1, 'a perfect Singapore night is 100% of its ceiling'
-        assert bands["61–80%"] >= 1, '2,000 of 2,800 belongs in the 61-80 band'
+        assert bands["91–100%"] >= 1, 'a perfect Singapore night is 100% of its ceiling'
+        assert bands["71–80%"] >= 1, '2,000 of 2,800 belongs in the 71-80 band'
 
         # The ceilings themselves are derived from the games each event ran.
         from app.event_report import EVENT_MAX
