@@ -53,6 +53,10 @@ ARCHIVE_FACTS: dict[str, dict[str, int]] = {
     "uae_ai_connect": {"rooms": 2, "days": 2, "games": 5, "mins": 30},
 }
 
+# Arcade 1.0 scored each game out of 100, so a perfect run of the five was 500 -
+# the number the archive page prints beside its best score.
+LEGACY_GAME_MAX = 100
+
 # What the show was called on the poster, for the line above the numbers.
 ARCHIVE_DATES: dict[str, str] = {
     "uae_ai_connect": "Sep. 29-30",
@@ -73,9 +77,13 @@ def facts(key: str) -> str:
     stored as one string so the numbers and the sentence cannot drift apart.
     """
     counted = ARCHIVE_FACTS[key]
+    # 1.0 scored every game out of 100, so the total on offer is games x 100.
+    # Written as a product rather than a fifth dated number: the games count is
+    # already above, and the two cannot drift apart this way.
     return (
         f"{counted['rooms']} rooms · {counted['days']} days · "
-        f"{counted['games']} games · {counted['mins']} mins per round"
+        f"{counted['games']} games · {counted['mins']} mins per round · "
+        f"{counted['games'] * LEGACY_GAME_MAX:,} points in total"
     )
 
 

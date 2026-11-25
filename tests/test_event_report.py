@@ -383,7 +383,7 @@ async def test_an_archived_event_is_read_from_its_own_endpoint(
     # The line above the numbers names the shape of that show.
     assert body["tagline"] == (
         "Arcade 1.0 · AI Cyber Arcade for UAE AI Connect - "
-        "2 rooms · 2 days · 5 games · 30 mins per round"
+        "2 rooms · 2 days · 5 games · 30 mins per round · 500 points in total"
     )
 
 
@@ -444,9 +444,19 @@ async def test_the_event_list_names_the_one_that_just_finished(
     # ...and the line under it: how the show was laid out, as the organisers
     # described it. Facts, not something derived from the rows.
     facts = {event["key"]: event.get("facts") for event in body["events"]}
-    assert facts["sg_fintech_week"] == "1 booth · 3 days · 3 games · 5 mins per round"
-    assert facts["hk_employee"] == "1 booth · 3 days · 4 games · 10 mins per round"
-    assert facts["hk_fintech_week"] == "1 booth · 3 hours · 4 games · 10 mins per round"
+    # ...and what a perfect run was worth, added up from the games that event ran.
+    assert (
+        facts["sg_fintech_week"]
+        == "1 booth · 3 days · 3 games · 5 mins per round · 2,000 points in total"
+    )
+    assert (
+        facts["hk_employee"]
+        == "1 booth · 3 days · 4 games · 10 mins per round · 2,800 points in total"
+    )
+    assert (
+        facts["hk_fintech_week"]
+        == "1 booth · 3 hours · 4 games · 10 mins per round · 2,800 points in total"
+    )
     # The summary has no layout of its own - it is not a show.
     assert facts["all"] is None
     # The archived event is labelled as such, so nothing downstream treats it as

@@ -59,3 +59,27 @@ EVENTS: list[dict[str, str]] = [
 ]
 
 EVENT_KEYS: frozenset[str] = frozenset(event["key"] for event in EVENTS)
+
+# What a perfect run of each game is worth. The ceiling lives beside the events
+# rather than in the report, because it is a property of the game, not of one
+# page: the report prints it next to every score, and the facts line adds it up.
+GAME_MAX: dict[str, int] = {"hallucination": 600, "data": 800, "sabotage": 800, "ultimate": 600}
+
+
+def points(key: str) -> int:
+    """What a perfect run of this event's games is worth: 2,800 for four games,
+    2,000 in Singapore, where Sabotage was switched off.
+
+    Derived from `modules` so the facts line and the scores cannot disagree - a
+    hand-typed total is the kind of thing that stays put when a game is dropped.
+    """
+    event = next((one for one in EVENTS if one["key"] == key), None)
+    if event is None:
+        return 0
+    return sum(GAME_MAX[game] for game in event["modules"])
+
+
+def facts(event: dict[str, str]) -> str:
+    """The organiser's line plus the total on offer: what the show was, and what
+    a player could walk away with."""
+    return f"{event['facts']} · {points(event['key']):,} points in total"

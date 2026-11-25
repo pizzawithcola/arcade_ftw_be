@@ -27,17 +27,16 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app import archive
 from app.auth import require_display
 from app.database import get_session
-from app.events import EVENTS, EVENT_KEYS
+from app.events import EVENTS, EVENT_KEYS, GAME_MAX, facts as event_facts, points
 from app.models import Player, Score
 
 router = APIRouter(prefix="/events", tags=["events"])
 
 LABELS = {event["key"]: event["label"] for event in EVENTS}
 DATES = {event["key"]: event["dates"] for event in EVENTS}
-FACTS = {event["key"]: event["facts"] for event in EVENTS}
+FACTS = {event["key"]: event_facts(event) for event in EVENTS}
 SHORTS = {event["key"]: event["short"] for event in EVENTS}
 EVENT_ORDER = [event["key"] for event in EVENTS]
-MODULES = {event["key"]: event["modules"] for event in EVENTS}
 TABS = {event["key"]: event["tab"] for event in EVENTS}
 # The days the show actually ran, so the day chart plots the event and not the
 # handful of sign-ups that straggle in around it (a rehearsal account, a test
@@ -56,12 +55,11 @@ ALL_TITLE = "Arcade 2.0 - Overall Summary"
 # same whatever timezone the operator's laptop is in.
 REPORT_TZ = timezone(timedelta(hours=8))
 
-# The four scored sections, in the order the show runs them, and what a perfect
-# run of each is worth. The ceiling lives here so the report can print
-# "324.5 / 600" without the frontend keeping its own copy of the rules.
+# The four scored sections, in the order the show runs them. What each is worth
+# lives in `app.events` beside the games themselves, so the report can print
+# "324.5 / 600" and the facts line can add the same numbers up.
 GAME_COLUMNS = ("hallucination_score", "data_score", "sabotage_score", "ultimate_score")
 GAME_KEYS = ("hallucination", "data", "sabotage", "ultimate")
-GAME_MAX = {"hallucination": 600, "data": 800, "sabotage": 800, "ultimate": 600}
 
 
 def _label(key: str) -> str:
@@ -261,17 +259,11 @@ def _registration_days(rows: list[dict], window: tuple[str, str] | None = None) 
     return [{"date": day, **counts} for day, counts in sorted(days.items())]
 
 
-def _event_max(key: str) -> int:
-    """What a perfect run of that event was worth.
-
-    The events did not run the same set of games - Singapore had no Sabotage - so
-    a perfect night was 2,800 at one show and 2,000 at another. Every comparison
-    across events has to divide by the total the player could actually reach.
-    """
-    return sum(GAME_MAX[game] for game in MODULES.get(key, ()))
-
-
-EVENT_MAX = {event["key"]: _event_max(event["key"]) for event in EVENTS}
+# What a perfect run of each event was worth. The events did not run the same
+# set of games - Singapore had no Sabotage - so a perfect night was 2,800 at one
+# show and 2,000 at another, and every comparison across events divides by the
+# total the player could actually reach.
+EVENT_MAX = {event["key"]: points(event["key"]) for event in EVENTS}
 
 
 def _game_stats(rows: list[dict], game: str) -> dict:
@@ -465,7 +457,7 @@ async def list_events(
         {
             **event,
             "title": _title(event["key"]),
-            "facts": event.get("facts"),
+            "facts": FACTS.get(event["key"]),
             "players": seen.get(event["key"], {}).get("players", 0),
             "last_registration": (
                 seen[event["key"]]["last"].isoformat()
